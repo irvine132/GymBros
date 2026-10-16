@@ -5,6 +5,7 @@ Le dépôt canonique part d'un commit vide. Ce worktree isolé `dev/slice-a` con
 - Spécification : `PRODUCT_SPEC_AGENT.md`
 - Architecture, scope et parcours de validation : `docs/architecture.md`
 - Arbitrages techniques et contraintes d'environnement : `docs/decisions/`
+- Inventaire complémentaire des outils mutualisables et limites : `docs/shared-tools-audit.md`
 - Backlog MVP et suite : `docs/backlog/README.md`
 
 ## Vérifications réalisées ici
