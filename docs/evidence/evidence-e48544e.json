@@ -1,0 +1,17 @@
+{
+  "task": "t_a6f8efac",
+  "candidate_sha": "e48544e54e09f48318f5eaa61332225b89cf9ea1",
+  "branch": "dev/slice-a",
+  "remote_sha_verified": "e48544e54e09f48318f5eaa61332225b89cf9ea1",
+  "ci": {"run_id":39018237689,"head_sha":"e48544e54e09f48318f5eaa61332225b89cf9ea1","status":"completed","conclusion":"success","url":"https://github.com/irvine132/GymBros/actions/runs/39018237689"},
+  "criteria": [
+    {"id":"scope-docs","status":"pass","evidence":{"PRODUCT_SPEC_AGENT.md":"35e759bcd4175a9c01911a2468c87d9d56863ad4dcc1a54fbf548473bc302d48","docs/architecture.md":"d37625668289f0c23fa02015c53b1a5e22b53c8a3cb7c5e70d964c139c1ef5de","docs/backlog/README.md":"0bb770b6abd5876e5a3e1b2e44d6744d5e1d15d47d1e808dfec970fda8281beb"}},
+    {"id":"auth-private-ownership","status":"pass-local-review-pending","evidence":{"server/src/test/java/dev/gymbro/SliceAIntegrationTest.java":"e565f1e48d45c8f119d49f70c566743e80f2849ffc865b72dfb207ef4da44074","server/src/main/java/dev/gymbro/GymBroApplication.java":"7293fae4044100d3875bca2048663dd929a9e2081e6aeb2daf9a7fe4b5daf12d"},"result":"mvn -q verify exit 0: 1 integration test; two accounts, logout and IDOR GET/PUT/complete/post 404"},
+    {"id":"workout-resume","status":"pass-minimal","evidence":{"mobile/lib/main.dart":"cf80026f293bb469117689992a802c0d49dcd541a4b719f0def8f24a9667b07a","mobile/test/slice_a_test.dart":"377da9c2316f2f9769533441c588f951b3a0e9482fdfb369c4cf7ab66e9bc3d1"},"result":"flutter test exit 0: 4 tests; draft reopened and isolated, 2 sets; robust offline sync excluded"},
+    {"id":"opt-in-feed-detail","status":"pass-local","evidence":{"gym-bro-slice-a-feed.png":"cd9327770df73d587e682920902949973ef10a5d582de7707676425b1fa6d4e9","gym-bro-slice-a-detail.png":"181850a06fa6827e7146bdfa2f8dc2ef88346a084bf70aac620c19d5ac9e0b5d"},"result":"real Flutter web build and two-account API seed PASS; private until publish; retry one post; B sees public detail"},
+    {"id":"block-report","status":"pass-minimal-review-pending","evidence":{"server/src/test/java/dev/gymbro/SliceAIntegrationTest.java":"e565f1e48d45c8f119d49f70c566743e80f2849ffc865b72dfb207ef4da44074","mobile/test/slice_a_test.dart":"377da9c2316f2f9769533441c588f951b3a0e9482fdfb369c4cf7ab66e9bc3d1"},"result":"IT and widget report/block; feed/detail filtering; admin moderation excluded"},
+    {"id":"migration-launch","status":"pass-local","evidence":{"server/src/main/resources/db/migration/V1__slice_a.sql":"6fa401e62236b262fef33df00058f38621a822265ca2bdfcce05942a256b8288","server/src/main/resources/db/migration/V2__result_schema_version.sql":"a5aca18e3f59160b6c38ece118534b7091c48e019ad45396aed848c62a5a6220","scripts/demo_seed.py":"01c406843b93cc09c1022973eb14e72ec932d7b06099d696b4872e8c4442c9f1","docs/verification.md":"af7a01d6848c014d5e3c3db9a0575ca991ac321b9e2f40c66655975b46a0bd98"},"result":"Flyway V1/V2 applied; java -jar 18081, web 18082, seed two accounts PASS; unauth API 401"},
+    {"id":"mobile-build-ci","status":"partial","evidence":{"mobile/lib/main.dart":"cf80026f293bb469117689992a802c0d49dcd541a4b719f0def8f24a9667b07a"},"result":"Flutter analyze PASS, widget 4/4 PASS, web release PASS; CI final SHA e48544e completed/success; Android/iOS unvalidated"}
+  ],
+  "limitations": ["Independent auth/privacy review pending", "No Android APK/iOS IPA validated", "No beta-grade secure storage, account recovery, rate limits, export/deletion, admin moderation or robust offline sync", "Preview loopback only"]
+}
