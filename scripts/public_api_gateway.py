@@ -1,6 +1,7 @@
 """Narrow loopback gateway for the non-production Gym Bro Funnel route.
 
-The Funnel handler targets /gym-bro; the incoming path is checked again here. No
+The Funnel handler targets /gym-bro and strips it before forwarding. Accept only
+the precise API allowlist below (also with the prefix for local smoke tests). No
 client-controlled forwarding headers, redirects, cookies or arbitrary routes.
 """
 import http.client
@@ -25,9 +26,14 @@ _windows = {'auth': [], 'write': []}
 
 def route(method, target):
     parsed = urlsplit(target)
-    if parsed.scheme or parsed.netloc or parsed.fragment or not parsed.path.startswith(PREFIX + '/'):
+    if parsed.scheme or parsed.netloc or parsed.fragment:
         return None
-    suffix = parsed.path[len(PREFIX):]
+    if parsed.path.startswith(PREFIX + '/'):
+        suffix = parsed.path[len(PREFIX):]
+    elif parsed.path.startswith('/api/v1/'):
+        suffix = parsed.path[len('/api/v1'):]
+    else:
+        return None
     if not any(re.fullmatch(pattern, suffix) for pattern in ROUTES.get(method, ())):
         return None
     if parsed.query and not (method == 'GET' and suffix == '/feed' and

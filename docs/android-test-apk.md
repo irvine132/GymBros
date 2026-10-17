@@ -1,4 +1,21 @@
-# Premier APK Android de test — Slice A
+# APK Android de test — Slice A
+
+## Version 2002 — API publique HTTPS de test
+
+Artefact ARM64 hors Git : `/srv/hermes-dev/toolchains/gym-bro/artifacts/gym-bro-slice-a-0.1.0+2002-arm64-public-test.apk`, 18398862 octets, SHA-256 `1407efc3532851bf4879de69c3be8b012d8f873ca014e796ed4976ca3e269b90`. Package identique `dev.gymbro.prototype`, versionName `0.1.0`, versionCode **2002** (supérieur à 2001), min/target SDK 24/36, ABI arm64-v8a ; signature v2 vérifiée, même certificat debug SHA-256 `d4f92da861ae3835a41e7f776a1dc309795976628fea16e666df95c70f5431c8` que 2001. L'APK est signé par la clé de **test** locale hors Git, non adapté au store/production. `INTERNET` et permission interne AndroidX seulement ; config réseau release `cleartextTrafficPermitted=false` sans exception HTTP. Le binaire Flutter AOT contient `https://hermes-dev-hub.taildf8f08.ts.net/gym-bro/api/v1` et non l'URL API loopback (contrôle `python3 scripts/verify_apk_url.py <apk>`). Aucun identifiant n'est embarqué. Tester seulement avec comptes jetables, sans données personnelles.
+
+L'URL HTTPS publique passe par un handler Funnel additionnel vers le gateway loopback : détails, limites de débit et vérification TLS/deux comptes dans `docs/public-api-test.md`. Le téléphone **n'a pas besoin d'USB/adb reverse** pour joindre l'API tant que l'hôte, l'API, le gateway et Funnel restent en ligne et que le téléphone dispose d'Internet. Une panne réseau affiche un délai/message explicite et une action Réessayer lors de la restauration de session. Aucun appareil/émulateur n'a été connecté à ce run : installation, mise à niveau effective depuis 2001 et parcours natif **non vérifiés**, seul le build/package et le parcours API publique l'ont été. La revue indépendante reste à faire.
+
+Build reproduit depuis `mobile/` avec SDK/caches Gym Bro existants (vérifier que `mobile/android/local.properties` pointe vers ce SDK, fichier ignoré Git) :
+
+    source /srv/hermes-dev/toolchains/gym-bro/env.sh
+    export ANDROID_HOME=/srv/hermes-dev/toolchains/gym-bro/android-sdk ANDROID_SDK_ROOT=/srv/hermes-dev/toolchains/gym-bro/android-sdk
+    export GRADLE_USER_HOME=/srv/hermes-dev/toolchains/gym-bro/gradle-cache PUB_CACHE=/srv/hermes-dev/toolchains/gym-bro/pub-cache
+    flutter build apk --release --split-per-abi --build-name=0.1.0 --build-number=2 --dart-define=API_BASE=https://hermes-dev-hub.taildf8f08.ts.net/gym-bro/api/v1
+
+Vérifications : `aapt dump badging <apk>`, `apksigner verify --verbose --print-certs <apk>`, `sha256sum <apk>` et `python3 ../scripts/verify_apk_url.py <apk>`. Flutter produit trois ABI mais seul ARM64 est livré. Mesurer la marge disque avant rebuild. Un premier essai du build 2002 a échoué car l'environnement partagé pointait à nouveau sur le NDK incomplet d'un autre projet ; correction de `local.properties` et des variables SDK dédiées, puis build final PASS. Aucun composant de l'autre projet n'a été modifié.
+
+## Version 2001 historique — loopback USB uniquement
 
 Artefact de diffusion hors Git : `/srv/hermes-dev/toolchains/gym-bro/artifacts/gym-bro-slice-a-0.1.0+2001-arm64-test.apk`. SHA-256 : `b540e76431f62c2c9d9eaebb5b378a5ae2377ca881e866d39cc4d8a054c4b505` ; taille : 18398954 octets. APK Flutter **optimisé release, arm64-v8a uniquement, signé avec la clé debug de test**, non destiné au store ni à la production ; ne pas l'installer sur un appareil contenant des données personnelles. Le build `--release --split-per-abi` a terminé (arm64-v8a 18,4 Mo ; armeabi-v7a 15,7 Mo ; x86_64 19,8 Mo), et source/copie ont des SHA identiques. L'APK debug universel initial reste conservé au même emplacement (`gym-bro-slice-a-0.1.0+1-debug.apk`, SHA-256 `1d72f5bad3bcf3b70525d49da0a7b6d8f033f073ad258d77e3b697f40a0da18b`, 154630482 octets) mais Discord l'a refusé avec HTTP 413 : **son envoi a échoué**, même si un message texte a été publié. La clé debug Android locale est hors Git (`~/.android/debug.keystore`, mode 0600) ; ne pas la diffuser.
 
