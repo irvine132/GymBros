@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -6,6 +9,10 @@ import 'package:uuid/uuid.dart';
 
 const apiBase = String.fromEnvironment('API_BASE', defaultValue: 'http://127.0.0.1:18081/api/v1');
 void main() => runApp(const GymApp());
+
+class ApiUnauthorized implements Exception {
+  @override String toString() => 'Session expirée. Reconnectez-vous.';
+}
 
 class DraftStore {
   final SharedPreferences prefs;
@@ -24,15 +31,32 @@ class DraftStore {
 }
 
 class Api {
+  final http.Client Function() clientFactory;
+  final Duration timeout;
+  Api({http.Client Function()? clientFactory, this.timeout = const Duration(seconds: 12)})
+      : clientFactory = clientFactory ?? http.Client.new;
   String? token;
   Future<dynamic> call(String method, String path, [Object? body]) async {
     final uri = Uri.parse('$apiBase$path');
     final headers = <String, String>{'Content-Type': 'application/json', if (token != null) 'Authorization': 'Bearer $token'};
     final request = http.Request(method, uri)..headers.addAll(headers);
     if (body != null) request.body = jsonEncode(body);
-    final response = await http.Response.fromStream(await http.Client().send(request));
+    final client = clientFactory();
+    late http.Response response;
+    try {
+      response = await http.Response.fromStream(await client.send(request).timeout(timeout)).timeout(timeout);
+    } on TimeoutException {
+      throw StateError('Réseau indisponible ou délai dépassé. Vérifiez votre connexion puis Réessayer.');
+    } on SocketException {
+      throw StateError('Réseau indisponible. Vérifiez votre connexion puis Réessayer.');
+    } on http.ClientException {
+      throw StateError('Réseau indisponible. Vérifiez votre connexion puis Réessayer.');
+    } finally {
+      client.close();
+    }
+    if (response.statusCode == 401) throw ApiUnauthorized();
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('HTTP ${response.statusCode}: ${response.statusCode == 401 ? 'session expirée' : 'opération refusée'}');
+      throw Exception('HTTP ${response.statusCode}: opération refusée');
     }
     return response.body.isEmpty ? null : jsonDecode(response.body);
   }
@@ -47,13 +71,16 @@ class _GymAppState extends State<GymApp> {
   DraftStore? store;
   String? userId;
   bool loading = true;
+  String? restoreError;
   @override void initState() { super.initState(); _restore(); }
   Future<void> _restore() async {
     final prefs = await SharedPreferences.getInstance();
     api.token = prefs.getString('token');
     final id = prefs.getString('userId');
     if (api.token != null && id != null) {
-      try { await api.call('GET', '/me'); userId = id; } catch (_) { api.token = null; await prefs.remove('token'); await prefs.remove('userId'); }
+      try { await api.call('GET', '/me'); userId = id; restoreError = null; }
+      on ApiUnauthorized { api.token = null; await prefs.remove('token'); await prefs.remove('userId'); }
+      catch (_) { restoreError = 'Réseau indisponible. Vérifiez votre connexion puis Réessayer.'; }
     }
     if (mounted) setState(() { store = DraftStore(prefs); loading = false; });
   }
@@ -75,6 +102,9 @@ class _GymAppState extends State<GymApp> {
   @override Widget build(BuildContext context) => MaterialApp(
     title: 'Gym Bro', theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff355ad2))),
     home: loading ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+      : restoreError != null ? Scaffold(body: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(restoreError!), TextButton(onPressed: () { setState(() { loading = true; restoreError = null; }); _restore(); }, child: const Text('Réessayer')),
+        ])))
       : userId == null ? AuthScreen(api: api, onSuccess: signedIn)
       : HomeScreen(api: api, userId: userId!, store: store!, onLogout: logout),
   );

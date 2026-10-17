@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:gym_bro/main.dart';
 
@@ -23,6 +25,18 @@ class FakeApi extends Api {
 }
 
 void main() {
+  test('API network timeout fails with an actionable message', () async {
+    final api = Api(clientFactory: () => MockClient((_) async {
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      return http.Response('{}', 200);
+    }), timeout: const Duration(milliseconds: 10));
+    await expectLater(api.call('GET', '/feed'), throwsA(predicate((e) =>
+      '$e'.contains('Réseau indisponible') && '$e'.contains('Réessayer'))));
+  });
+  test('401 is distinguishable from temporary network outage', () async {
+    final api = Api(clientFactory: () => MockClient((_) async => http.Response('', 401)));
+    await expectLater(api.call('GET', '/me'), throwsA(isA<ApiUnauthorized>()));
+  });
   testWidgets('registration and feed-first shell', (tester) async {
     SharedPreferences.setMockInitialValues({});
     await tester.pumpWidget(const GymApp());
