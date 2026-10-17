@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -24,7 +26,93 @@ class FakeApi extends Api {
   }
 }
 
+class StartupApi extends Api {
+  bool offline = false, unauthorized = false;
+  Completer<dynamic>? pendingMe;
+  int calls = 0;
+  @override Future<dynamic> call(String method, String path, [Object? body]) async {
+    calls++;
+    if (offline) throw StateError('network down');
+    if (unauthorized) throw ApiUnauthorized();
+    if (path == '/me') return pendingMe?.future ?? {'id': 'alice'};
+    if (path == '/feed' || path == '/sessions') return [];
+    throw StateError('Unexpected $method $path');
+  }
+}
+
 void main() {
+  testWidgets('storage error leaves spinner and allows safe retry without losing draft', (tester) async {
+    SharedPreferences.setMockInitialValues({'draft:alice': '{"title":"Saved"}'});
+    final prefs = await SharedPreferences.getInstance();
+    var attempts = 0;
+    await tester.pumpWidget(GymApp(openPreferences: () async {
+      if (attempts++ == 0) throw StateError('plugin unavailable');
+      return prefs;
+    }));
+    await tester.pumpAndSettle();
+    expect(find.text('Réessayer'), findsOneWidget);
+    await tester.tap(find.text('Réessayer'));
+    await tester.pumpAndSettle();
+    expect(find.text('Connexion'), findsWidgets);
+    expect(prefs.getString('draft:alice'), '{"title":"Saved"}');
+  });
+  testWidgets('storage that never completes times out and retry can recover', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final stuck = Completer<SharedPreferences>();
+    var attempts = 0;
+    await tester.pumpWidget(GymApp(openPreferences: () => attempts++ == 0 ? stuck.future : Future.value(prefs)));
+    await tester.pump(const Duration(seconds: 9));
+    expect(find.text('Réessayer'), findsOneWidget);
+    await tester.tap(find.text('Réessayer'));
+    await tester.pumpAndSettle();
+    expect(find.text('Connexion'), findsWidgets);
+    stuck.complete(prefs);
+    await tester.pump();
+    expect(find.text('Connexion'), findsWidgets);
+  });
+  testWidgets('cached token network outage is recoverable; anonymous startup needs no network', (tester) async {
+    SharedPreferences.setMockInitialValues({'token': 'cached', 'userId': 'alice', 'draft:alice': '{"title":"Saved"}'});
+    final prefs = await SharedPreferences.getInstance();
+    final api = StartupApi()..offline = true;
+    await tester.pumpWidget(GymApp(api: api, openPreferences: () async => prefs));
+    await tester.pumpAndSettle();
+    expect(find.text('Réessayer'), findsOneWidget);
+    expect(prefs.getString('token'), 'cached');
+    expect(prefs.getString('draft:alice'), '{"title":"Saved"}');
+    api.offline = false;
+    await tester.tap(find.text('Réessayer'));
+    await tester.pumpAndSettle();
+    expect(find.text('Gym Bro'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    SharedPreferences.setMockInitialValues({});
+    final anonymous = StartupApi()..offline = true;
+    await tester.pumpWidget(GymApp(api: anonymous));
+    await tester.pumpAndSettle();
+    expect(find.text('Connexion'), findsWidgets);
+    expect(anonymous.calls, 0);
+  });
+  testWidgets('cached token 401 returns login, preserving the draft', (tester) async {
+    SharedPreferences.setMockInitialValues({'token': 'expired', 'userId': 'alice', 'draft:alice': '{"title":"Saved"}'});
+    final prefs = await SharedPreferences.getInstance();
+    await tester.pumpWidget(GymApp(api: StartupApi()..unauthorized = true, openPreferences: () async => prefs));
+    await tester.pumpAndSettle();
+    expect(find.text('Connexion'), findsWidgets);
+    expect(prefs.getString('token'), isNull);
+    expect(prefs.getString('draft:alice'), '{"title":"Saved"}');
+  });
+  testWidgets('stalled token validation times out then retry restores feed', (tester) async {
+    SharedPreferences.setMockInitialValues({'token': 'cached', 'userId': 'alice'});
+    final api = StartupApi()..pendingMe = Completer<dynamic>();
+    await tester.pumpWidget(GymApp(api: api));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 26));
+    expect(find.text('Réessayer'), findsOneWidget);
+    api.pendingMe = null;
+    await tester.tap(find.text('Réessayer'));
+    await tester.pumpAndSettle();
+    expect(find.text('Aucune publication publique pour le moment.'), findsOneWidget);
+  });
   test('API network timeout fails with an actionable message', () async {
     final api = Api(clientFactory: () => MockClient((_) async {
       await Future<void>.delayed(const Duration(milliseconds: 80));

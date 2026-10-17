@@ -63,26 +63,50 @@ class Api {
 }
 
 class GymApp extends StatefulWidget {
-  const GymApp({super.key});
+  final Future<SharedPreferences> Function() openPreferences;
+  final Api? api;
+  const GymApp({super.key, this.openPreferences = SharedPreferences.getInstance, this.api});
   @override State<GymApp> createState() => _GymAppState();
 }
 class _GymAppState extends State<GymApp> {
-  final api = Api();
+  late final Api api = widget.api ?? Api();
   DraftStore? store;
   String? userId;
   bool loading = true;
   String? restoreError;
+  int restoreAttempt = 0;
   @override void initState() { super.initState(); _restore(); }
   Future<void> _restore() async {
-    final prefs = await SharedPreferences.getInstance();
-    api.token = prefs.getString('token');
-    final id = prefs.getString('userId');
-    if (api.token != null && id != null) {
-      try { await api.call('GET', '/me'); userId = id; restoreError = null; }
-      on ApiUnauthorized { api.token = null; await prefs.remove('token'); await prefs.remove('userId'); }
-      catch (_) { restoreError = 'Réseau indisponible. Vérifiez votre connexion puis Réessayer.'; }
+    final attempt = ++restoreAttempt;
+    try {
+      // The plugin can fail or never reply on a device; do not strand startup.
+      final prefs = await widget.openPreferences().timeout(const Duration(seconds: 8));
+      if (!mounted || attempt != restoreAttempt) return;
+      store = DraftStore(prefs);
+      api.token = prefs.getString('token');
+      final id = prefs.getString('userId');
+      if (api.token != null && id != null) {
+        try {
+          await api.call('GET', '/me').timeout(const Duration(seconds: 25));
+          if (!mounted || attempt != restoreAttempt) return;
+          userId = id;
+        } on ApiUnauthorized {
+          if (!mounted || attempt != restoreAttempt) return;
+          api.token = null;
+          await prefs.remove('token').timeout(const Duration(seconds: 8));
+          await prefs.remove('userId').timeout(const Duration(seconds: 8));
+        } on TimeoutException {
+          if (attempt == restoreAttempt) restoreError = 'Réseau ou stockage indisponible ou délai dépassé. Réessayer.';
+        } catch (_) {
+          if (attempt == restoreAttempt) restoreError = 'Réseau ou stockage indisponible. Vérifiez votre connexion puis Réessayer.';
+        }
+      }
+    } catch (_) {
+      // A transient storage failure must never clear credentials or drafts.
+      if (attempt == restoreAttempt) restoreError = 'Stockage local indisponible. Vos données sont conservées. Réessayer.';
+    } finally {
+      if (mounted && attempt == restoreAttempt) setState(() => loading = false);
     }
-    if (mounted) setState(() { store = DraftStore(prefs); loading = false; });
   }
   Future<void> signedIn(Map<String, dynamic> auth) async {
     final prefs = store!.prefs;
