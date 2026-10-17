@@ -27,6 +27,8 @@ Terminal 3, preview du build Flutter vérifiée (après `flutter build web` ci-d
 
 Preview web locale : `http://127.0.0.1:18082/`. Pour un émulateur Android **après** installation SDK 36/licences/build tools et vérification du build : utiliser `--dart-define=API_BASE=http://10.0.2.2:18081/api/v1` avec bind API approprié limité au réseau de l'émulateur ; le binaire Android n'a **pas** été validé ici. Le manifest debug autorise HTTP pour test local, pas release. iOS exige macOS/Xcode et HTTPS pour distribution. Pas d'URL de production/config sensible dans Git.
 
+Vérifier la disponibilité effective (et pas seulement un port à l'écoute) depuis le worktree : `bash scripts/preview_smoke.sh`. Le smoke exige HTTP 200 pour `/`, `/index.html` et `/main.dart.js`, ainsi que HTTP 401 sans jeton pour `/api/v1/me`. Si la preview est démarrée en tâche de fond hors d'un terminal interactif, conserver stdout/stderr ouverts via une supervision durable ou les rediriger vers un fichier local hors Git : un serveur Python détaché avec une sortie cassée peut accepter la connexion puis répondre `Empty reply from server` (exit 52). Ne pas confondre port ouvert et preview fonctionnelle.
+
 ## Vérifications réellement exercées
 
     source /srv/hermes-dev/toolchains/gym-bro/env.sh
