@@ -35,7 +35,7 @@ Preview web locale : `http://127.0.0.1:18082/`. Pour un émulateur Android **apr
     cd ../mobile && flutter analyze && flutter test
     flutter build web --release --dart-define=API_BASE=http://127.0.0.1:18081/api/v1
 
-Voir `docs/verification.md` (commandes, résultats et limites) et `docs/api.md` (contrat actuel). `PRODUCT_SPEC_AGENT.md` est la copie intégrale de la spec. Architecture et ADR dans `docs/`, backlog détaillé documentaire uniquement dans `docs/backlog/`. Ancien diagnostic d'environnement désormais résolu dans `docs/shared-tools-audit.md` et `docs/local-tool-preparation.md` ; le statut actuel est dans l'ADR-001.
+Voir `docs/verification.md` (commandes, résultats et limites) et `docs/api.md` (contrat actuel). `PRODUCT_SPEC_AGENT.md` est la copie intégrale de la spec. Architecture et ADR dans `docs/`, backlog détaillé et mapping vers 53 cartes de suivi bloquées dans `docs/backlog/` (aucun worker supplémentaire lancé). Ancien diagnostic d'environnement désormais résolu dans `docs/shared-tools-audit.md` et `docs/local-tool-preparation.md` ; le statut actuel est dans l'ADR-001.
 
 ## Hors Slice A / avant bêta
 

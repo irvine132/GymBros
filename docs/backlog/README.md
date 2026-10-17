@@ -1,8 +1,24 @@
 # Backlog documentaire — Forge
 
-Source de vérité : `PRODUCT_SPEC_AGENT.md` v1.0 ; architecture et décisions dans `docs/`. **Aucune carte ci-dessous n'est une carte Kanban exécutable** : c'est le plan produit, et seule Slice A est autorisée à être développée sur la carte actuelle. Chaque ligne est un lot S (~0,5–1 j) ou M (~1–2 j) ; si un lot excède 2 jours, le re-découper avant travail. Critère de fini commun : code/document ciblé, contrôle serveur de droits, migration additive si schéma, tests mentionnés verts, commande de reproduction, doc/contrat API actualisé, auto-revue et aucun secret. `A` = Slice A actuelle, `B–E` = suite MVP non démarrée, `P1/P2` = post-MVP sans Go. Dépendances `—` = aucune.
+Source de vérité : `PRODUCT_SPEC_AGENT.md` v1.0 ; architecture et décisions dans `docs/`. L'opérateur a matérialisé le backlog en **53 cartes de suivi bloquées `needs_input`**, sans lancement de workers concurrents (demande 1560932694760624283). Seule la carte mère Slice A `t_a6f8efac` porte l'implémentation actuelle ; les cartes A détaillées sont des liens de suivi à réconcilier par preuves, **pas** de nouveaux pilotes. Aucun Go d'exécution pour B–E ou P1/P2. Chaque ligne est un lot S (~0,5–1 j) ou M (~1–2 j) ; si un lot excède 2 jours, le re-découper avant travail. Critère de fini commun : code/document ciblé, contrôle serveur de droits, migration additive si schéma, tests mentionnés verts, commande de reproduction, doc/contrat API actualisé, auto-revue et aucun secret. `A` = Slice A actuelle, `B–E` = suite MVP non démarrée, `P1/P2` = post-MVP sans Go. Dépendances `—` = aucune.
 
 Format des acceptations : Given (état initial), When (action), Then (résultat vérifiable). `API` = serveur REST et migration ; `UI` = Flutter ; `IT` = intégration backend ; `WT` = widget ; `E2E` = parcours réel local. Les tests ne sont pas présumés exécutés.
+
+## Correspondance produit → carte de suivi (état bloqué, non achevé par défaut)
+
+Ce mapping est un inventaire, pas une déclaration d'achèvement. Pour les lots A, les preuves de la carte mère `t_a6f8efac` s'appliquent seulement aux critères effectivement couverts ; TR-01 (catalogue), par exemple, reste non réalisé. Ne pas promouvoir ces cartes sans vérifier leur propre acceptation et la revue sécurité requise.
+
+| Epic | IDs produit = cartes |
+|---|---|
+| BOOT | BOOT-01=t_2f7cb301 · BOOT-02=t_3eab5f22 · BOOT-03=t_e22b060d · BOOT-04=t_8590950d · BOOT-05=t_70b9019c |
+| ID | ID-01a=t_6706374f · ID-01b=t_513511d5 · ID-01c=t_656b7a3a · ID-02=t_41495047 · ID-03=t_79890ed7 · ID-04=t_23243f3f · ID-05a=t_96926efe · ID-05b=t_99ef8a2a |
+| TR | TR-01=t_147b7d02 · TR-02=t_4823d8a7 · TR-03=t_c0c285be · TR-04=t_d4a1d745 · TR-05=t_6ba0f8be · TR-06=t_58738b7c · TR-07a=t_169432e2 · TR-07b=t_68a16a8a |
+| TMP | TMP-01=t_0f1d3418 · TMP-02=t_2070a24d · TMP-03=t_b823784b · TMP-04=t_80f10d7e |
+| SOC | SOC-01a=t_746e886f · SOC-01b=t_959206cf · SOC-02=t_f54bbe88 · SOC-03a=t_b9f0b64f · SOC-03b=t_daa93eca · SOC-04=t_cbbaffe2 · SOC-05a=t_66b98621 · SOC-05b=t_6d9435d7 · SOC-06=t_b7077830 |
+| DIS | DIS-01=t_c537a470 · DIS-02=t_fd6ce8a6 · DIS-03=t_45852694 |
+| SAFE / QA | SAFE-01=t_397dd577 · SAFE-02=t_2610580f · QA-01=t_c9483057 · QA-02=t_ffdd281a · QA-03=t_6269171a · QA-04=t_bcaf578f |
+| P1 | P1-01=t_17fb3335 · P1-02=t_1a4bd28c · P1-03=t_4d83bb61 · P1-04=t_02c79f8a · P1-05=t_c7106e3b · P1-06=t_86531121 |
+| P2 | P2-01=t_4169aff2 · P2-02=t_31109872 · P2-03=t_ae6eec6b · P2-04=t_8ceaff53 |
 
 ## EPIC 00 — Socle (P0)
 
