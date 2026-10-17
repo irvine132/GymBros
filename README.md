@@ -1,18 +1,42 @@
-# GymBros / Forge — état de la tranche A
+# Gym Bro — Slice A (branche `dev/slice-a`)
 
-Le dépôt canonique part d'un commit vide. Ce worktree isolé `dev/slice-a` contient **le cadrage seulement** : copie de la spécification, architecture, deux ADR et backlog documentaire. Il ne contient pas encore d'application utilisable, d'API, de migration, de test ni de CI. Ne pas interpréter ces documents comme une livraison fonctionnelle ou une autorisation de déploiement.
+Client Flutter mobile Android/iOS dans `mobile/` ; le build web est une **preview du même client**, pas un remplacement du mobile. API Spring Boot 3 / Java 21 dans `server/`, PostgreSQL 17 local et migrations Flyway additives. Cette tranche prototype permet inscription/connexion/déconnexion, feed public en landing, brouillon local de séance musculation (un exercice, plusieurs séries, reps, charge kg/lb), fin privée, publication publique facultative, historique privé, détail, blocage et signalement côté API. Rien n'est déployé. Ne pas exposer publiquement ce prototype.
 
-- Spécification : `PRODUCT_SPEC_AGENT.md`
-- Architecture, scope et parcours de validation : `docs/architecture.md`
-- Arbitrages techniques et contraintes d'environnement : `docs/decisions/`
-- Inventaire complémentaire des outils mutualisables et limites : `docs/shared-tools-audit.md`
-- Tentative contrôlée de préparation locale, contrôles d'intégrité et obstacle d'approbation : `docs/local-tool-preparation.md`
-- Backlog MVP et suite : `docs/backlog/README.md`
+## Démarrage local vérifié (environnement Gym Bro préparé)
 
-## Vérifications réalisées ici
+Dans le worktree, terminal 1 :
 
-`git status --short --branch` et `git rev-parse HEAD` ont confirmé le worktree `dev/slice-a` issu du commit initial `d76c1702b1c38ef11468d63680b956d8789fa8cb`. Les deux exemplaires de la spécification ont le même SHA-256 (`35e759bcd4175a9c01911a2468c87d9d56863ad4dcc1a54fbf548473bc302d48`). L'archive Flutter existante est conforme au SHA-256 de la liste officielle et passe `xz -t`, mais **`flutter doctor -v` échoue** car le répertoire `packages/flutter_tools` manque. JDK 17 et Android SDK sont accessibles en lecture seule ; pas de Java 21/Gradle/Maven/PostgreSQL local identifié et Docker API refuse la connexion. Au dernier contrôle, disque racine libre ~3,7 Go, `/dev/shm` ~2,0 Go, swap saturé. Les tentatives d'extraction bornée, y compris vers le répertoire Gym Bro, ont été refusées avant exécution par la politique du terminal headless ; voir `docs/local-tool-preparation.md`. Aucun test produit ou lancement local ne peut être déclaré réussi.
+    source /srv/hermes-dev/toolchains/gym-bro/env.sh
+    source /srv/hermes-dev/toolchains/gym-bro/db-env.sh
+    cd server && mvn spring-boot:run
 
-## Plan de reprise (non exécuté)
+Ces scripts sont hors Git et chargent les variables DB sans les afficher ; utiliser une base locale dédiée avec `GYM_BRO_DB_HOST/PORT/NAME/USER/PASSWORD` sur un autre poste. API `http://127.0.0.1:18081/api/v1`. Flyway applique V1 puis V2 (aucune suppression de table). Ne pas utiliser une DB de production.
 
-Après disponibilité d'un environnement sain : implémenter client Flutter et API/DB Slice A selon `docs/architecture.md` et lots A du backlog ; écrire les tests ciblés RED/GREEN ; exécuter réellement `flutter doctor`, les tests widget, les migrations, les tests serveur et le flux E2E à deux comptes avec refus IDOR/privé ; fournir les commandes exactes vérifiées, CI et preuves. Puis auto-revoir, commit sur cette branche, push uniquement `dev/slice-a` si l'implémentation est démontrée, vérifier le SHA distant et demander revue indépendante auth/autorisations sur SHA exact. Aucun merge ou déploiement sans nouveau Go humain.
+Terminal 2, deux comptes démo jetables, identifiants générés localement et non imprimés :
+
+    python3 scripts/demo_seed.py
+
+Lire les credentials dans `.local/demo-accounts.json` (mode 0600, gitignored) depuis votre éditeur local. Le script rejoue réellement inscription, fin privée, refus IDOR, publication et feed à deux comptes. Ne pas réutiliser les comptes dans une autre base.
+
+Terminal 3, preview du build Flutter vérifiée (après `flutter build web` ci-dessous) :
+
+    source /srv/hermes-dev/toolchains/gym-bro/env.sh
+    cd mobile
+    flutter build web --release --dart-define=API_BASE=http://127.0.0.1:18081/api/v1
+    python3 -m http.server 18082 --bind 127.0.0.1 --directory build/web
+
+Preview web locale : `http://127.0.0.1:18082/`. Pour un émulateur Android **après** installation SDK 36/licences/build tools et vérification du build : utiliser `--dart-define=API_BASE=http://10.0.2.2:18081/api/v1` avec bind API approprié limité au réseau de l'émulateur ; le binaire Android n'a **pas** été validé ici. Le manifest debug autorise HTTP pour test local, pas release. iOS exige macOS/Xcode et HTTPS pour distribution. Pas d'URL de production/config sensible dans Git.
+
+## Vérifications réellement exercées
+
+    source /srv/hermes-dev/toolchains/gym-bro/env.sh
+    source /srv/hermes-dev/toolchains/gym-bro/db-env.sh
+    cd server && mvn verify
+    cd ../mobile && flutter analyze && flutter test
+    flutter build web --release --dart-define=API_BASE=http://127.0.0.1:18081/api/v1
+
+Voir `docs/verification.md` (commandes, résultats et limites) et `docs/api.md` (contrat actuel). `PRODUCT_SPEC_AGENT.md` est la copie intégrale de la spec. Architecture et ADR dans `docs/`, backlog détaillé documentaire uniquement dans `docs/backlog/`. Ancien diagnostic d'environnement désormais résolu dans `docs/shared-tools-audit.md` et `docs/local-tool-preparation.md` ; le statut actuel est dans l'ADR-001.
+
+## Hors Slice A / avant bêta
+
+Aucun follow ou feed Abonnements, audience abonnés/privée de post, copie/template, CrossFit/Hyrox, catalogue d'exercices, clubs, paiement, marketplace, IA. Restent MVP : récupération de compte, profil/paramètres privés, follow, pagination par curseur, robustesse offline/outbox/conflits, stockage local chiffré, modération admin, retrait des posts, export/suppression/rétention, rate limits, logs/observabilité, conformité, tests Android/iOS et revue sécurité indépendante. La CI du dépôt est proposée dans `.github/workflows/slice-a.yml` ; son résultat distant doit être vérifié après push. Aucun merge, main push, déploiement ou publication store sans Go humain.

@@ -1,0 +1,53 @@
+name: Slice A checks
+on:
+  push:
+    branches: [dev/slice-a]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: gym_bro
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['15433:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d gym_bro"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      GYM_BRO_DB_HOST: 127.0.0.1
+      GYM_BRO_DB_PORT: 15433
+      GYM_BRO_DB_NAME: gym_bro
+      GYM_BRO_DB_USER: postgres
+      GYM_BRO_DB_PASSWORD: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: server/pom.xml
+      - run: mvn -B verify
+        working-directory: server
+  mobile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+        working-directory: mobile
+      - run: flutter analyze
+        working-directory: mobile
+      - run: flutter test
+        working-directory: mobile
+      - run: flutter build web --release --dart-define=API_BASE=http://127.0.0.1:18081/api/v1
+        working-directory: mobile
