@@ -45,9 +45,37 @@ void main() {
   test('diagnostic allowlist excludes exception payloads and unknown phases', () {
     final error = PlatformException(code: 'private-token', message: 'private-draft', details: 'private-email');
     expect(startupDiagnostic('prefs.open', error),
-      'Gym Bro $diagnosticBuild · prefs.open · PlatformException · D-OPEN-ERROR');
+      'Gym Bro $diagnosticBuild · prefs.open · PlatformException · D-OPEN-ERROR · native:unknown');
     expect(startupDiagnostic('private-email', error),
-      'Gym Bro $diagnosticBuild · unknown · PlatformException · D-OTHER-ERROR');
+      'Gym Bro $diagnosticBuild · unknown · PlatformException · D-OTHER-ERROR · native:unknown');
+  });
+  test('native cause chain retains known categories and discards payloads', () {
+    expect(classifyJavaCauseChain(['java.lang.RuntimeException', 'java.io.StreamCorruptedException']),
+      'RuntimeException>StreamCorruptedException');
+    expect(classifyJavaCauseChain(['java.lang.RuntimeException', 'private-token.private-email']),
+      'RuntimeException>Unknown');
+    expect(classifyJavaCauseChain(['private-draft', 'java.lang.SecurityException', 'private-token']),
+      'Unknown>SecurityException>Unknown');
+    expect(classifyJavaCauseChain(['java.lang.IllegalArgumentException', 'java.io.InvalidClassException', 'java.lang.NumberFormatException', 'java.lang.SecurityException']),
+      'IllegalArgumentException>InvalidClassException>NumberFormatException');
+  });
+  test('PlatformException code is only surfaced from a fixed list', () {
+    expect(startupDiagnostic('prefs.open', PlatformException(code: 'channel-error', message: 'private-email')),
+      'Gym Bro $diagnosticBuild · prefs.open · PlatformException · D-OPEN-ERROR · native:channel-error');
+    expect(startupDiagnostic('prefs.open', PlatformException(code: 'null-error', details: 'private-token')),
+      'Gym Bro $diagnosticBuild · prefs.open · PlatformException · D-OPEN-ERROR · native:null-error');
+  });
+  testWidgets('plugin exception screen excludes payload and retains stored draft', (tester) async {
+    SharedPreferences.setMockInitialValues({'draft:alice': 'private-draft'});
+    final prefs = await SharedPreferences.getInstance();
+    await tester.pumpWidget(GymApp(openPreferences: () async =>
+      throw PlatformException(code: 'private-token', message: 'private-email', details: 'private-draft')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('prefs.open · PlatformException · D-OPEN-ERROR · native:unknown'), findsOneWidget);
+    expect(find.textContaining('private-token'), findsNothing);
+    expect(find.textContaining('private-email'), findsNothing);
+    expect(find.textContaining('private-draft'), findsNothing);
+    expect(prefs.getString('draft:alice'), 'private-draft');
   });
   testWidgets('storage error leaves spinner and allows safe retry without losing draft', (tester) async {
     SharedPreferences.setMockInitialValues({'draft:alice': '{"title":"Saved"}'});

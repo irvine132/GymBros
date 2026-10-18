@@ -35,6 +35,8 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   http: ^1.6.0
+  # Inspect only the Java class of the exact JNI exception from shared_preferences.
+  jni: ^1.1.0
   shared_preferences: ^2.5.6
   uuid: ^4.6.0
 
