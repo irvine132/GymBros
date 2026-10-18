@@ -5,9 +5,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:jni/jni.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
+import 'native_diagnostic_io.dart'
+    if (dart.library.js_interop) 'native_diagnostic_web.dart' as native;
 
 const apiBase = String.fromEnvironment('API_BASE', defaultValue: 'http://127.0.0.1:18081/api/v1');
 const diagnosticBuild = String.fromEnvironment('DIAGNOSTIC_BUILD', defaultValue: 'unknown');
@@ -34,46 +35,6 @@ const _javaErrorClasses = <String, String>{
 String classifyJavaCauseChain(Iterable<String> names) =>
     names.take(3).map((name) => _javaErrorClasses[name] ?? 'Unknown').join('>');
 
-// The plugin's Pigeon JNI wrapper places the original JThrowable in details.
-// Read only class identity and at most two causes; no message, trace or values.
-String _nativeDiagnostic(PlatformException error) {
-  if (error.code == 'channel-error' || error.code == 'null-error') return error.code;
-  if (error.code != 'PlatformException' || error.details is! JThrowable) return 'unknown';
-  final names = <String>[];
-  JObject? current = error.details as JThrowable;
-  var owned = false;
-  try {
-    final throwableClass = JClass.forName('java/lang/Throwable');
-    final classClass = JClass.forName('java/lang/Class');
-    try {
-      final getCause = throwableClass.instanceMethodId('getCause', '()Ljava/lang/Throwable;');
-      final getName = classClass.instanceMethodId('getName', '()Ljava/lang/String;');
-      for (var i = 0; i < 3 && current != null; i++) {
-        final javaClass = current.jClass;
-        try {
-          final name = getName.call(javaClass, JString.type, []);
-          names.add(name.toDartString(releaseOriginal: true));
-        } finally {
-          javaClass.release();
-        }
-        final next = getCause.callNullable(current, JObject.type, []);
-        if (owned) current.release();
-        current = next;
-        owned = next != null;
-      }
-    } finally {
-      throwableClass.release();
-      classClass.release();
-    }
-  } catch (_) {
-    // JNI diagnostic failure must not obscure the original storage error.
-    return 'jni-inspection-failed';
-  } finally {
-    if (owned) current?.release();
-  }
-  return names.isEmpty ? 'unknown' : 'jni.getAll:${classifyJavaCauseChain(names)}';
-}
-
 // Never include exception messages, stack traces, preference values, or API bodies.
 String startupDiagnostic(String phase, Object error) {
   final kind = switch (error) {
@@ -92,8 +53,9 @@ String startupDiagnostic(String phase, Object error) {
     _ => 'OTHER',
   };
   final safePhase = operation == 'OTHER' ? 'unknown' : phase;
-  final native = error is PlatformException ? ' · native:${_nativeDiagnostic(error)}' : '';
-  return 'Gym Bro $diagnosticBuild · $safePhase · $kind · D-$operation-${error is TimeoutException ? 'TIMEOUT' : 'ERROR'}$native';
+  final nativeCode = error is PlatformException
+      ? ' · native:${native.nativeDiagnostic(error, classifyJavaCauseChain)}' : '';
+  return 'Gym Bro $diagnosticBuild · $safePhase · $kind · D-$operation-${error is TimeoutException ? 'TIMEOUT' : 'ERROR'}$nativeCode';
 }
 
 class ApiUnauthorized implements Exception {
