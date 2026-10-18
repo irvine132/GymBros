@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -41,6 +42,13 @@ class StartupApi extends Api {
 }
 
 void main() {
+  test('diagnostic allowlist excludes exception payloads and unknown phases', () {
+    final error = PlatformException(code: 'private-token', message: 'private-draft', details: 'private-email');
+    expect(startupDiagnostic('prefs.open', error),
+      'Gym Bro $diagnosticBuild · prefs.open · PlatformException · D-OPEN-ERROR');
+    expect(startupDiagnostic('private-email', error),
+      'Gym Bro $diagnosticBuild · unknown · PlatformException · D-OTHER-ERROR');
+  });
   testWidgets('storage error leaves spinner and allows safe retry without losing draft', (tester) async {
     SharedPreferences.setMockInitialValues({'draft:alice': '{"title":"Saved"}'});
     final prefs = await SharedPreferences.getInstance();
@@ -51,6 +59,9 @@ void main() {
     }));
     await tester.pumpAndSettle();
     expect(find.text('Réessayer'), findsOneWidget);
+    expect(find.textContaining('$diagnosticBuild · prefs.open · StateError · D-OPEN-ERROR'), findsOneWidget);
+    expect(find.textContaining('plugin unavailable'), findsNothing);
+    expect(find.text('Copier le diagnostic'), findsOneWidget);
     await tester.tap(find.text('Réessayer'));
     await tester.pumpAndSettle();
     expect(find.text('Connexion'), findsWidgets);
@@ -64,12 +75,37 @@ void main() {
     await tester.pumpWidget(GymApp(openPreferences: () => attempts++ == 0 ? stuck.future : Future.value(prefs)));
     await tester.pump(const Duration(seconds: 9));
     expect(find.text('Réessayer'), findsOneWidget);
+    expect(find.textContaining('$diagnosticBuild · prefs.open · TimeoutException · D-OPEN-TIMEOUT'), findsOneWidget);
     await tester.tap(find.text('Réessayer'));
     await tester.pumpAndSettle();
     expect(find.text('Connexion'), findsWidgets);
     stuck.complete(prefs);
     await tester.pump();
     expect(find.text('Connexion'), findsWidgets);
+  });
+  testWidgets('read and post-401 removal identify phases without values', (tester) async {
+    SharedPreferences.setMockInitialValues({'token': 'private-token', 'userId': 'alice', 'draft:alice': 'private-draft'});
+    final prefs = await SharedPreferences.getInstance();
+    await tester.pumpWidget(GymApp(openPreferences: () async => prefs,
+      readPreference: (prefs, key) => key == 'token' ? throw StateError('private-token') : prefs.getString(key)));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('prefs.read.token · StateError · D-READ-ERROR'), findsOneWidget);
+    expect(find.textContaining('private-token'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(GymApp(api: StartupApi()..unauthorized = true,
+      openPreferences: () async => prefs,
+      removePreference: (prefs, key) async { throw StateError('private-draft'); }));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('prefs.remove.token · StateError · D-REMOVE-ERROR'), findsOneWidget);
+    expect(find.textContaining('private-draft'), findsNothing);
+    expect(prefs.getString('draft:alice'), 'private-draft');
+  });
+  testWidgets('network exception identifies validation phase without token', (tester) async {
+    SharedPreferences.setMockInitialValues({'token': 'private-token', 'userId': 'alice'});
+    await tester.pumpWidget(GymApp(api: StartupApi()..offline = true));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('api.me · StateError · D-NETWORK-ERROR'), findsOneWidget);
+    expect(find.textContaining('private-token'), findsNothing);
   });
   testWidgets('cached token network outage is recoverable; anonymous startup needs no network', (tester) async {
     SharedPreferences.setMockInitialValues({'token': 'cached', 'userId': 'alice', 'draft:alice': '{"title":"Saved"}'});

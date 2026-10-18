@@ -3,12 +3,35 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 const apiBase = String.fromEnvironment('API_BASE', defaultValue: 'http://127.0.0.1:18081/api/v1');
+const diagnosticBuild = String.fromEnvironment('DIAGNOSTIC_BUILD', defaultValue: 'unknown');
 void main() => runApp(const GymApp());
+
+// Never include exception messages, stack traces, preference values, or API bodies.
+String startupDiagnostic(String phase, Object error) {
+  final kind = switch (error) {
+    TimeoutException() => 'TimeoutException',
+    MissingPluginException() => 'MissingPluginException',
+    PlatformException() => 'PlatformException',
+    StateError() => 'StateError',
+    FormatException() => 'FormatException',
+    _ => 'Other',
+  };
+  final operation = switch (phase) {
+    'prefs.open' => 'OPEN',
+    'prefs.read.token' || 'prefs.read.userId' => 'READ',
+    'prefs.remove.token' || 'prefs.remove.userId' => 'REMOVE',
+    'api.me' => 'NETWORK',
+    _ => 'OTHER',
+  };
+  final safePhase = operation == 'OTHER' ? 'unknown' : phase;
+  return 'Gym Bro $diagnosticBuild · $safePhase · $kind · D-$operation-${error is TimeoutException ? 'TIMEOUT' : 'ERROR'}';
+}
 
 class ApiUnauthorized implements Exception {
   @override String toString() => 'Session expirée. Reconnectez-vous.';
@@ -64,8 +87,13 @@ class Api {
 
 class GymApp extends StatefulWidget {
   final Future<SharedPreferences> Function() openPreferences;
+  final String? Function(SharedPreferences, String) readPreference;
+  final Future<bool> Function(SharedPreferences, String) removePreference;
   final Api? api;
-  const GymApp({super.key, this.openPreferences = SharedPreferences.getInstance, this.api});
+  const GymApp({super.key, this.openPreferences = SharedPreferences.getInstance,
+    this.readPreference = _readPreference, this.removePreference = _removePreference, this.api});
+  static String? _readPreference(SharedPreferences prefs, String key) => prefs.getString(key);
+  static Future<bool> _removePreference(SharedPreferences prefs, String key) => prefs.remove(key);
   @override State<GymApp> createState() => _GymAppState();
 }
 class _GymAppState extends State<GymApp> {
@@ -74,18 +102,23 @@ class _GymAppState extends State<GymApp> {
   String? userId;
   bool loading = true;
   String? restoreError;
+  String? restoreDiagnostic;
   int restoreAttempt = 0;
   @override void initState() { super.initState(); _restore(); }
   Future<void> _restore() async {
     final attempt = ++restoreAttempt;
+    var phase = 'prefs.open';
     try {
       // The plugin can fail or never reply on a device; do not strand startup.
       final prefs = await widget.openPreferences().timeout(const Duration(seconds: 8));
       if (!mounted || attempt != restoreAttempt) return;
       store = DraftStore(prefs);
-      api.token = prefs.getString('token');
-      final id = prefs.getString('userId');
+      phase = 'prefs.read.token';
+      api.token = widget.readPreference(prefs, 'token');
+      phase = 'prefs.read.userId';
+      final id = widget.readPreference(prefs, 'userId');
       if (api.token != null && id != null) {
+        phase = 'api.me';
         try {
           await api.call('GET', '/me').timeout(const Duration(seconds: 25));
           if (!mounted || attempt != restoreAttempt) return;
@@ -93,17 +126,25 @@ class _GymAppState extends State<GymApp> {
         } on ApiUnauthorized {
           if (!mounted || attempt != restoreAttempt) return;
           api.token = null;
-          await prefs.remove('token').timeout(const Duration(seconds: 8));
-          await prefs.remove('userId').timeout(const Duration(seconds: 8));
-        } on TimeoutException {
-          if (attempt == restoreAttempt) restoreError = 'Réseau ou stockage indisponible ou délai dépassé. Réessayer.';
-        } catch (_) {
-          if (attempt == restoreAttempt) restoreError = 'Réseau ou stockage indisponible. Vérifiez votre connexion puis Réessayer.';
+          phase = 'prefs.remove.token';
+          await widget.removePreference(prefs, 'token').timeout(const Duration(seconds: 8));
+          phase = 'prefs.remove.userId';
+          await widget.removePreference(prefs, 'userId').timeout(const Duration(seconds: 8));
+        } catch (error) {
+          // Only the network failure belongs here. Storage errors retain their phase.
+          if (phase != 'api.me') rethrow;
+          if (attempt == restoreAttempt) {
+            restoreError = 'Réseau indisponible. Vérifiez votre connexion puis Réessayer.';
+            restoreDiagnostic = startupDiagnostic(phase, error);
+          }
         }
       }
-    } catch (_) {
+    } catch (error) {
       // A transient storage failure must never clear credentials or drafts.
-      if (attempt == restoreAttempt) restoreError = 'Stockage local indisponible. Vos données sont conservées. Réessayer.';
+      if (attempt == restoreAttempt) {
+        restoreError = 'Stockage local indisponible. Vos données sont conservées. Réessayer.';
+        restoreDiagnostic = startupDiagnostic(phase, error);
+      }
     } finally {
       if (mounted && attempt == restoreAttempt) setState(() => loading = false);
     }
@@ -127,7 +168,9 @@ class _GymAppState extends State<GymApp> {
     title: 'Gym Bro', theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff355ad2))),
     home: loading ? const Scaffold(body: Center(child: CircularProgressIndicator()))
       : restoreError != null ? Scaffold(body: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text(restoreError!), TextButton(onPressed: () { setState(() { loading = true; restoreError = null; }); _restore(); }, child: const Text('Réessayer')),
+          Text(restoreError!), SelectableText(restoreDiagnostic!),
+          TextButton(onPressed: () => Clipboard.setData(ClipboardData(text: restoreDiagnostic!)), child: const Text('Copier le diagnostic')),
+          TextButton(onPressed: () { setState(() { loading = true; restoreError = null; restoreDiagnostic = null; }); _restore(); }, child: const Text('Réessayer')),
         ])))
       : userId == null ? AuthScreen(api: api, onSuccess: signedIn)
       : HomeScreen(api: api, userId: userId!, store: store!, onLogout: logout),
