@@ -337,28 +337,40 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int tab = 0;
   List<dynamic> feed = [], history = [];
-  Map<String, dynamic>? profile;
-  bool hasMore = false;
+  List<dynamic> followed = [], requests = [];
+  Map<String, dynamic>? profile, settings;
+  String? followCursor;
+  bool subscriptions = false, hasMore = false;
   String? error;
   bool busy = false;
   @override void initState() { super.initState(); refresh(); }
   Future<void> refresh() async {
-    setState(() { busy = true; error = null; });
+    setState(() { busy = true; error = null; feed = []; followed = []; followCursor = null; });
     try {
       final posts = await widget.api.call('GET', '/feed');
       final sessions = await widget.api.call('GET', '/sessions');
       if (mounted) setState(() { feed = posts as List; history = sessions as List; hasMore = feed.length == 20; });
       final summary = await widget.api.call('GET', '/me/summary');
-      if (mounted) setState(() => profile = Map<String, dynamic>.from(summary as Map));
+      if (mounted) { setState(() => profile = Map<String, dynamic>.from(summary as Map)); }
+      final own = await widget.api.call('GET', '/me');
+      final inbox = await widget.api.call('GET', '/me/follow-requests');
+      final page = await widget.api.call('GET', '/feed/following') as Map;
+      if (mounted) { setState(() { settings = Map<String,dynamic>.from(own as Map); requests = inbox as List;
+        followed = page['items'] as List; followCursor = page['nextCursor'] as String?; }); }
     } catch (e) { if (mounted) setState(() => error = 'Chargement impossible. Vérifiez votre connexion puis réessayez.'); }
     finally { if (mounted) setState(() => busy = false); }
   }
   Future<void> loadMore() async {
-    if (busy || !hasMore) return;
+    if (busy || (subscriptions ? followCursor == null : !hasMore)) return;
     setState(() { busy = true; error = null; });
     try {
-      final next = await widget.api.call('GET', '/feed?offset=${feed.length}') as List;
-      if (mounted) setState(() { feed.addAll(next); hasMore = next.length == 20; });
+      if (subscriptions) {
+        final page = await widget.api.call('GET', '/feed/following?cursor=$followCursor') as Map;
+        if (mounted) setState(() { followed.addAll(page['items'] as List); followCursor = page['nextCursor'] as String?; });
+      } else {
+        final next = await widget.api.call('GET', '/feed?offset=${feed.length}') as List;
+        if (mounted) setState(() { feed.addAll(next); hasMore = next.length == 20; });
+      }
     } catch (_) { if (mounted) setState(() => error = 'Page indisponible. Réessayez.'); }
     finally { if (mounted) setState(() => busy = false); }
   }
@@ -424,6 +436,38 @@ class _HomeScreenState extends State<HomeScreen> {
     await Navigator.push(context, MaterialPageRoute(builder: (_) => WorkoutScreen(api: widget.api, store: widget.store, userId: widget.userId)));
     refresh();
   }
+  Future<void> searchAthlete() async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => AthleteSearchScreen(api: widget.api, userId: widget.userId)));
+    if (mounted) refresh();
+  }
+  Future<void> openAthlete(String id) async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => AthleteScreen(api: widget.api, id: id, userId: widget.userId)));
+    if (mounted) refresh();
+  }
+  Future<void> decideRequest(String id, bool accept) async {
+    try { await widget.api.call('POST', '/follow-requests/$id/${accept ? 'accept' : 'reject'}', {}); await refresh(); }
+    catch (_) { if (mounted) setState(() => error = 'Demande indisponible. Réessayez.'); }
+  }
+  Future<void> editProfile() async {
+    final current = settings;
+    if (current == null) return;
+    final name = TextEditingController(text: current['displayName'] as String? ?? '');
+    var privateAccount = current['private'] == true, unit = '${current['unit'] ?? 'kg'}';
+    final submitted = await showDialog<Map<String,dynamic>>(context: context, builder: (dialog) => StatefulBuilder(builder: (dialog, update) => AlertDialog(
+      title: const Text('Modifier mon profil'), content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        TextField(controller: name, maxLength: 60, decoration: const InputDecoration(labelText: 'Nom public (facultatif)')),
+        SwitchListTile(title: const Text('Compte privé'), value: privateAccount, onChanged: (v) => update(() => privateAccount = v)),
+        DropdownButtonFormField<String>(initialValue: unit, decoration: const InputDecoration(labelText: 'Unité préférée'),
+          items: ['kg','lb'].map((u) => DropdownMenuItem(value: u, child: Text(u))).toList(), onChanged: (v) => update(() => unit = v!)),
+        const Text('Un compte privé masque même les anciennes publications publiques aux inconnus.'),
+      ])), actions: [TextButton(onPressed: () => Navigator.pop(dialog), child: const Text('Annuler')),
+        FilledButton(onPressed: () => Navigator.pop(dialog, {'displayName': name.text.trim().isEmpty ? null : name.text.trim(), 'private': privateAccount, 'unit': unit}), child: const Text('Enregistrer'))],
+    )));
+    name.dispose();
+    if (submitted == null) return;
+    try { await widget.api.call('PUT', '/me/profile', submitted); await refresh(); }
+    catch (_) { if (mounted) setState(() => error = 'Profil non enregistré. Réessayez.'); }
+  }
   Future<void> openSession(Map session) async {
     try {
       final item = await widget.api.call('GET', '/sessions/${session['id']}') as Map;
@@ -452,7 +496,8 @@ class _HomeScreenState extends State<HomeScreen> {
       Row(children: [CircleAvatar(backgroundColor: lime, foregroundColor: ink,
         child: Text('${post['author'] ?? '?'}'.substring(0, 1).toUpperCase())),
         const SizedBox(width: 12), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('@${post['author']}', style: const TextStyle(fontWeight: FontWeight.w700)),
+          InkWell(onTap: post['authorId'] == null ? null : () => openAthlete('${post['authorId']}'),
+            child: Text('@${post['author']} · Voir le profil', style: const TextStyle(fontWeight: FontWeight.w700, decoration: TextDecoration.underline))),
           Text('${sportLabel(post['sport'])} · ${dateLabel(post['date'])}'),
         ]))]),
       const SizedBox(height: 16), Text('${post['title']}', style: Theme.of(context).textTheme.titleLarge),
@@ -466,10 +511,17 @@ class _HomeScreenState extends State<HomeScreen> {
     const SizedBox(height: 8), Text('Bouge. Note. Partage.', style: Theme.of(context).textTheme.headlineLarge),
     const SizedBox(height: 10), const Text('Tes séances restent privées. Tu choisis si tu veux les partager avec la communauté.'),
     const SizedBox(height: 20), FilledButton.icon(onPressed: train, icon: const Icon(Icons.add), label: const Text('Commencer une séance')),
-    const SizedBox(height: 22), Text('La communauté', style: Theme.of(context).textTheme.titleLarge),
-    if (feed.isEmpty && !busy) gymCard(child: const Text('Pas encore de séances publiques ici. Lance ta première séance ; elle restera privée jusqu’à ton choix de publier.')),
-    for (final entry in feed) postCard(entry as Map),
-    if (hasMore) OutlinedButton(onPressed: busy ? null : loadMore, child: const Text('Voir plus de séances')),
+    const SizedBox(height: 22), Wrap(spacing: 8, children: [
+      ChoiceChip(label: const Text('Découvrir'), selected: !subscriptions, onSelected: (_) => setState(() => subscriptions = false)),
+      ChoiceChip(label: const Text('Abonnements'), selected: subscriptions, onSelected: (_) => setState(() => subscriptions = true)),
+    ]),
+    if (subscriptions && followed.isEmpty && !busy) gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Text('Aucune publication de tes abonnements. Trouve un athlète à suivre ou attends sa prochaine séance.'),
+      TextButton(onPressed: searchAthlete, child: const Text('Rechercher un athlète'))])),
+    if (!subscriptions && feed.isEmpty && !busy) gymCard(child: const Text('Pas encore de séances publiques ici. Lance ta première séance ; elle restera privée jusqu’à ton choix de publier.')),
+    if (!subscriptions) TextButton(onPressed: searchAthlete, child: const Text('Rechercher un athlète')),
+    for (final entry in (subscriptions ? followed : feed)) postCard(entry as Map),
+    if (subscriptions ? followCursor != null : hasMore) OutlinedButton(onPressed: busy ? null : loadMore, child: const Text('Voir plus de séances')),
   ]);
   Widget historyView() => ListView(padding: const EdgeInsets.all(16), children: [
     Text('Mes séances', style: Theme.of(context).textTheme.headlineLarge),
@@ -490,7 +542,14 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Text('${profile?['handle'] ?? '?'}'.substring(0, 1).toUpperCase())),
       const SizedBox(height: 12), Text('@${profile?['handle'] ?? '…'}', style: Theme.of(context).textTheme.titleLarge),
       const SizedBox(height: 8), const Text('Ton espace personnel. Pas de classement, juste tes efforts.'),
+      if (settings != null) ...[const SizedBox(height: 8), Text('${settings!['private'] == true ? 'Compte privé' : 'Compte public'} · ${settings!['unit'] ?? 'kg'}'),
+        if (settings!['displayName'] != null) Text('${settings!['displayName']}')],
     ])),
+    OutlinedButton(onPressed: editProfile, child: const Text('Modifier mon profil')),
+    if (requests.isNotEmpty) ...[Text('Demandes de suivi', style: Theme.of(context).textTheme.titleLarge),
+      for (final item in requests) gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('@${item['handle']}'), Wrap(children: [TextButton(onPressed: () => decideRequest('${item['id']}', true), child: const Text('Accepter')),
+          TextButton(onPressed: () => decideRequest('${item['id']}', false), child: const Text('Refuser'))])]))],
     gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text('${profile?['sessions'] ?? '…'} ${profile?['sessions'] == 1 ? 'séance terminée' : 'séances terminées'}', style: Theme.of(context).textTheme.titleLarge),
       Text('${profile?['publications'] ?? '…'} ${profile?['publications'] == 1 ? 'publication' : 'publications'} · calculées sur ton compte'),
@@ -508,6 +567,103 @@ class _HomeScreenState extends State<HomeScreen> {
     floatingActionButton: tab == 0 ? null : FloatingActionButton.extended(onPressed: train, icon: const Icon(Icons.fitness_center), label: Text(widget.store.read(widget.userId) == null ? 'Nouvelle séance' : 'Reprendre')),
     bottomNavigationBar: NavigationBar(selectedIndex: tab, onDestinationSelected: (i) => setState(() => tab = i), destinations: const [NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Accueil'), NavigationDestination(icon: Icon(Icons.fitness_center_outlined), label: 'Entraînement'), NavigationDestination(icon: Icon(Icons.person_outline), label: 'Profil')]),
   );
+}
+
+class AthleteSearchScreen extends StatefulWidget {
+  final Api api; final String userId;
+  const AthleteSearchScreen({super.key, required this.api, required this.userId});
+  @override State<AthleteSearchScreen> createState() => _AthleteSearchState();
+}
+class _AthleteSearchState extends State<AthleteSearchScreen> {
+  final query = TextEditingController();
+  List<dynamic> results = [];
+  String? error;
+  bool busy = false, searched = false;
+  Future<void> search() async {
+    if (query.text.trim().length < 2) { setState(() => error = 'Saisissez au moins deux caractères.'); return; }
+    setState(() { busy = true; error = null; results = []; searched = false; });
+    try { final data = await widget.api.call('GET', '/users?query=${Uri.encodeQueryComponent(query.text.trim())}') as List;
+      if (mounted) setState(() { results = data; searched = true; }); }
+    catch (_) { if (mounted) setState(() => error = 'Recherche impossible. Réessayez.'); }
+    finally { if (mounted) setState(() => busy = false); }
+  }
+  @override void dispose() { query.dispose(); super.dispose(); }
+  @override Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: const Text('Trouver un athlète')),
+    body: ListView(padding: const EdgeInsets.all(16), children: [
+      TextField(key: const Key('athlete-query'), controller: query, decoration: const InputDecoration(labelText: 'Pseudo ou nom public'), onSubmitted: (_) => search()),
+      const SizedBox(height: 12), FilledButton(onPressed: busy ? null : search, child: const Text('Rechercher')),
+      if (busy) const LinearProgressIndicator(),
+      if (error != null) Text(error!, style: const TextStyle(color: Colors.red)),
+      if (searched && results.isEmpty) const Text('Aucun athlète trouvé.'),
+      for (final entry in results) gymCard(child: ListTile(
+        leading: const Icon(Icons.person_outline), title: Text('@${entry['handle']}'),
+        subtitle: Text('${entry['displayName'] ?? (entry['private'] == true ? 'Compte privé' : 'Compte public')}'),
+        trailing: const Icon(Icons.chevron_right), onTap: () async {
+          await Navigator.push(context, MaterialPageRoute(builder: (_) => AthleteScreen(api: widget.api, id: '${entry['id']}', userId: widget.userId)));
+          if (mounted) search();
+        })),
+    ]));
+}
+
+class AthleteScreen extends StatefulWidget {
+  final Api api; final String id, userId;
+  const AthleteScreen({super.key, required this.api, required this.id, required this.userId});
+  @override State<AthleteScreen> createState() => _AthleteState();
+}
+class _AthleteState extends State<AthleteScreen> {
+  Map? profile;
+  List<dynamic> posts = [];
+  String? cursor, error;
+  bool busy = false, hidden = false;
+  @override void initState() { super.initState(); refresh(); }
+  Future<void> refresh() async {
+    setState(() { busy = true; error = null; profile = null; posts = []; cursor = null; hidden = false; });
+    try {
+      final data = await widget.api.call('GET', '/users/${widget.id}') as Map;
+      if (mounted) setState(() => profile = data);
+      await loadPosts(reset: true);
+    } catch (e) {
+      if (mounted) setState(() { if (e is ApiHttpFailure && e.status == 404) { hidden = true; posts = []; } else { error = 'Profil indisponible. Réessayez.'; } });
+    } finally { if (mounted) setState(() => busy = false); }
+  }
+  Future<void> loadPosts({bool reset = false}) async {
+    try {
+      final data = await widget.api.call('GET', '/users/${widget.id}/posts${reset || cursor == null ? '' : '?cursor=$cursor'}') as Map;
+      if (mounted) setState(() { posts = reset ? data['items'] as List : [...posts, ...data['items'] as List]; cursor = data['nextCursor'] as String?; hidden = false; });
+    } on ApiHttpFailure catch (e) {
+      if (e.status == 404) { if (mounted) setState(() { posts = []; hidden = true; cursor = null; }); }
+      else { if (mounted) setState(() => error = 'Séances indisponibles. Réessayez.'); }
+    } catch (_) { if (mounted) setState(() => error = 'Séances indisponibles. Réessayez.'); }
+  }
+  Future<void> toggle() async {
+    setState(() { busy = true; error = null; });
+    try { await widget.api.call(profile?['relation'] == 'NONE' ? 'POST' : 'DELETE', '/users/${widget.id}/follow', profile?['relation'] == 'NONE' ? {} : null); await refresh(); }
+    catch (_) { if (mounted) setState(() => error = 'Suivi indisponible. Réessayez.'); }
+    finally { if (mounted) setState(() => busy = false); }
+  }
+  @override Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: const Text('Profil athlète')),
+    body: ListView(padding: const EdgeInsets.all(16), children: [
+      if (busy) const LinearProgressIndicator(),
+      if (error != null) TextButton(onPressed: refresh, child: Text(error!)),
+      if (profile != null) ...[
+        gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          CircleAvatar(backgroundColor: lime, foregroundColor: ink, child: Text('${profile!['handle']}'.substring(0,1).toUpperCase())),
+          const SizedBox(height: 12), Text('@${profile!['handle']}', style: Theme.of(context).textTheme.titleLarge),
+          if (profile!['displayName'] != null) Text('${profile!['displayName']}'),
+          Text(profile!['private'] == true ? 'Compte privé' : 'Compte public'),
+        ])),
+        if (widget.id != widget.userId) FilledButton(onPressed: busy ? null : toggle,
+          child: Text(switch (profile!['relation']) { 'PENDING' => 'Annuler la demande', 'ACCEPTED' => 'Ne plus suivre', _ => profile!['private'] == true ? 'Demander à suivre' : 'Suivre' })),
+        if (profile!['relation'] == 'PENDING') const Text('Demande envoyée · en attente de réponse.'),
+        if (hidden) const Text('Les séances de ce compte privé ne sont pas accessibles.'),
+        if (!hidden && posts.isEmpty && !busy) const Text('Aucune séance partagée accessible.'),
+        for (final entry in posts) gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('${entry['title']}', style: Theme.of(context).textTheme.titleLarge),
+          Text('${dateLabel(entry['date'])} · ${exerciseSummary(entry as Map)}'),
+        ])),
+        if (cursor != null) OutlinedButton(onPressed: busy ? null : () => loadPosts(), child: const Text('Voir plus de séances')),
+      ],
+    ]));
 }
 
 class WorkoutScreen extends StatefulWidget {
@@ -669,16 +825,16 @@ class _CompletedScreenState extends State<CompletedScreen> {
   String? error;
   bool busy = false, published = false;
   @override void initState() { super.initState(); published = widget.session['published'] == true; }
-  Future<void> publish() async {
+  Future<void> publish(String audience) async {
     final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
       title: const Text('Partager cette séance ?'),
-      content: const Text('Son titre, tes exercices, séries, répétitions et charges seront visibles par la communauté. Pas ton email ni l’heure précise.'),
+      content: Text('Son titre, tes exercices, séries, répétitions et charges seront visibles ${audience == 'PUBLIC' ? 'publiquement (sauf si ton compte est privé)' : 'uniquement par tes abonnés acceptés'}. Pas ton email ni l’heure précise.'),
       actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Rester privé')),
         FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Confirmer la publication'))],
     ));
     if (confirmed != true || !mounted) return;
     setState(() { busy = true; error = null; });
-    try { await widget.api.call('POST', '/sessions/${widget.session['id']}/posts'); if (mounted) setState(() => published = true); }
+    try { await widget.api.call('POST', '/sessions/${widget.session['id']}/posts', {'audience': audience}); if (mounted) setState(() => published = true); }
     catch (_) { if (mounted) setState(() => error = 'Publication impossible. Votre séance reste privée ; réessayez.'); }
     finally { if (mounted) setState(() => busy = false); }
   }
@@ -687,7 +843,7 @@ class _CompletedScreenState extends State<CompletedScreen> {
       const Icon(Icons.check_circle, color: ink, size: 52),
       const SizedBox(height: 12), Text('Bien joué !', style: Theme.of(context).textTheme.headlineLarge),
       const SizedBox(height: 12), Text('${widget.session['title']}', style: Theme.of(context).textTheme.titleLarge),
-      const SizedBox(height: 12), Text(published ? 'Séance partagée avec la communauté.' : 'Enregistrée dans votre historique privé. La publication est facultative.'),
+      const SizedBox(height: 12), Text(published ? 'Séance partagée avec l’audience choisie.' : 'Enregistrée dans votre historique privé. La publication est facultative.'),
       for (final exercise in (widget.session['workout']?['exercises'] as List? ?? [])) ...[
         const SizedBox(height: 12), gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('${exercise['name']}', style: Theme.of(context).textTheme.titleLarge),
@@ -696,8 +852,9 @@ class _CompletedScreenState extends State<CompletedScreen> {
         ])),
       ],
       if (error != null) Text(error!, style: const TextStyle(color: Colors.red)),
-      if (published) const Text('Publication publique effectuée.'),
-      if (!published) FilledButton(onPressed: busy ? null : publish, child: const Text('Publier publiquement')),
+      if (published) const Text('Publication effectuée.'),
+      if (!published) FilledButton(onPressed: busy ? null : () => publish('PUBLIC'), child: const Text('Publier publiquement')),
+      if (!published) OutlinedButton(onPressed: busy ? null : () => publish('FOLLOWERS'), child: const Text('Publier pour mes abonnés')),
       TextButton(onPressed: () => Navigator.pop(context), child: Text(published ? 'Retour à l’accueil' : 'Garder privée / Retour à l’accueil')),
     ]))),
   );

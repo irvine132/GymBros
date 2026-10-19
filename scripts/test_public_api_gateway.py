@@ -9,6 +9,13 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(route('GET', '/api/v1/me'), '/api/v1/me')
         self.assertEqual(route('GET', '/api/v1/me/summary'), '/api/v1/me/summary')
         self.assertEqual(route('GET', '/api/v1/exercises'), '/api/v1/exercises')
+        self.assertEqual(route('GET', '/api/v1/feed/following?limit=20'), '/api/v1/feed/following?limit=20')
+        self.assertEqual(route('GET', '/api/v1/users?query=alice'), '/api/v1/users?query=alice')
+        self.assertEqual(route('POST', '/api/v1/users/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/follow'), '/api/v1/users/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/follow')
+        self.assertEqual(route('DELETE', '/api/v1/users/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/follow'), '/api/v1/users/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/follow')
+        self.assertEqual(route('PUT', '/api/v1/me/profile'), '/api/v1/me/profile')
+        self.assertIsNone(route('GET', '/api/v1/users?query=%2e%2e%2fadmin'))
+        self.assertIsNone(route('GET', '/api/v1/feed/following?cursor=%0a'))
         self.assertEqual(route('GET', '/api/v1/feed?offset=1'), '/api/v1/feed?offset=1')
         self.assertEqual(route('POST', '/gym-bro/api/v1/auth/login'), '/api/v1/auth/login')
         self.assertEqual(route('POST', '/gym-bro/api/v1/sessions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/posts'),

@@ -2,12 +2,14 @@ package dev.gymbro;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.servlet.http.HttpServletRequest;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.Instant;
+import java.sql.Timestamp;
 import java.util.*;
 import java.util.regex.Pattern;
 import org.springframework.boot.SpringApplication;
@@ -39,6 +41,8 @@ public class GymBroApplication {
   record Exercise(String name, List<SetResult> sets) {}
   record Workout(UUID clientId, String title, List<Exercise> exercises) {}
   record Report(String reason) {}
+  record ProfileUpdate(String displayName, @JsonProperty("private") Boolean privateAccount, String unit) {}
+  record Publication(String audience) {}
   private ResponseStatusException error(HttpStatus code) { return new ResponseStatusException(code); }
   private String digest(String token) {
     try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.UTF_8))); }
@@ -71,7 +75,7 @@ public class GymBroApplication {
   public Map<String,Object> login(@RequestBody Credentials in) {
     if(in==null || in.email()==null || in.password()==null || in.email().length()>254 || in.password().length()>128) throw error(HttpStatus.BAD_REQUEST);
     List<Map<String,Object>> found=db.queryForList("SELECT id,password_hash FROM app_user WHERE email=?",in.email().strip().toLowerCase(Locale.ROOT));
-    if(found.isEmpty() || !passwords.matches(in.password(),(String)found.getFirst().get("password_hash"))) throw error(HttpStatus.UNAUTHORIZED);
+    if(found.isEmpty() || found.getFirst().get("password_hash")==null || !passwords.matches(in.password(),(String)found.getFirst().get("password_hash"))) throw error(HttpStatus.UNAUTHORIZED);
     return token((UUID)found.getFirst().get("id"));
   }
   @PostMapping("/auth/logout") public ResponseEntity<Void> logout(HttpServletRequest request) {
@@ -79,8 +83,66 @@ public class GymBroApplication {
     return ResponseEntity.noContent().build();
   }
   @GetMapping("/me") public Map<String,Object> me(HttpServletRequest request) {
-    return db.queryForMap("SELECT id,handle FROM app_user WHERE id=?",actor(request));
+    return db.queryForMap("SELECT id,handle,display_name AS \"displayName\",is_private AS \"private\",preferred_unit AS unit FROM app_user WHERE id=?",actor(request));
   }
+  @PutMapping("/me/profile") @Transactional public Map<String,Object> updateProfile(@RequestBody ProfileUpdate in,HttpServletRequest request) {
+    UUID owner=actor(request);
+    if(in==null || in.privateAccount()==null || !List.of("kg","lb").contains(in.unit()) ||
+      (in.displayName()!=null && (in.displayName().strip().length()>60 || in.displayName().strip().isEmpty()))) throw error(HttpStatus.BAD_REQUEST);
+    db.update("UPDATE app_user SET display_name=?,is_private=?,preferred_unit=? WHERE id=?",in.displayName()==null?null:in.displayName().strip(),in.privateAccount(),in.unit(),owner);
+    return me(request);
+  }
+  private static final String NO_BLOCK="NOT EXISTS (SELECT 1 FROM user_block b WHERE (b.blocker_id=? AND b.blocked_id=u.id) OR (b.blocked_id=? AND b.blocker_id=u.id))";
+  private Map<String,Object> profileRow(Map<String,Object> row) {
+    Map<String,Object> out=new LinkedHashMap<>();
+    out.put("id",row.get("id")); out.put("handle",row.get("handle"));
+    out.put("displayName",row.get("displayName")); out.put("private",row.get("private"));
+    out.put("relation",row.get("relation"));
+    return out;
+  }
+  private static final String PROFILE="SELECT u.id,u.handle,u.display_name AS \"displayName\",u.is_private AS \"private\",COALESCE(f.status,'NONE') AS relation FROM app_user u LEFT JOIN user_follow f ON f.followed_id=u.id AND f.follower_id=? WHERE ";
+  @GetMapping("/users") public List<Map<String,Object>> search(@RequestParam String query,HttpServletRequest request) {
+    UUID viewer=actor(request);
+    if(query==null || query.strip().length()<2 || query.strip().length()>60) throw error(HttpStatus.BAD_REQUEST);
+    String term="%"+query.strip().replace("\\","\\\\").replace("%","\\%").replace("_","\\_")+"%";
+    return db.queryForList(PROFILE+"u.id<>? AND "+NO_BLOCK+" AND (u.handle ILIKE ? ESCAPE '\\' OR u.display_name ILIKE ? ESCAPE '\\') ORDER BY u.handle LIMIT 20",viewer,viewer,viewer,viewer,term,term).stream().map(this::profileRow).toList();
+  }
+  @GetMapping("/users/{id}") public Map<String,Object> profile(@PathVariable UUID id,HttpServletRequest request) {
+    UUID viewer=actor(request);
+    List<Map<String,Object>> found=db.queryForList(PROFILE+"u.id=? AND (u.id=? OR "+NO_BLOCK+")",viewer,id,viewer,viewer,viewer);
+    if(found.isEmpty()) throw error(HttpStatus.NOT_FOUND);
+    return profileRow(found.getFirst());
+  }
+  private void available(UUID viewer,UUID target) {
+    if(viewer.equals(target)) throw error(HttpStatus.BAD_REQUEST);
+    if(db.queryForObject("SELECT count(*) FROM app_user u WHERE u.id=? AND "+NO_BLOCK,Integer.class,target,viewer,viewer)==0) throw error(HttpStatus.NOT_FOUND);
+  }
+  @PostMapping("/users/{id}/follow") @Transactional
+  public ResponseEntity<?> follow(@PathVariable UUID id,HttpServletRequest request) {
+    UUID viewer=actor(request); available(viewer,id);
+    String status=db.queryForObject("SELECT CASE WHEN is_private THEN 'PENDING' ELSE 'ACCEPTED' END FROM app_user WHERE id=? FOR UPDATE",String.class,id);
+    db.update("INSERT INTO user_follow(follower_id,followed_id,status) VALUES(?,?,?) ON CONFLICT(follower_id,followed_id) DO UPDATE SET status='ACCEPTED' WHERE EXCLUDED.status='ACCEPTED'",viewer,id,status);
+    String current=db.queryForObject("SELECT status FROM user_follow WHERE follower_id=? AND followed_id=?",String.class,viewer,id);
+    return ResponseEntity.status(current.equals("PENDING")?HttpStatus.ACCEPTED:HttpStatus.OK).body(Map.of("status",current));
+  }
+  @DeleteMapping("/users/{id}/follow") public Map<String,Object> unfollow(@PathVariable UUID id,HttpServletRequest request) {
+    UUID viewer=actor(request); available(viewer,id);
+    db.update("DELETE FROM user_follow WHERE follower_id=? AND followed_id=?",viewer,id);
+    return Map.of("status","NONE");
+  }
+  @GetMapping("/me/follow-requests") public List<Map<String,Object>> requests(HttpServletRequest request) {
+    UUID owner=actor(request);
+    return db.queryForList("SELECT u.id,u.handle FROM user_follow f JOIN app_user u ON u.id=f.follower_id WHERE f.followed_id=? AND f.status='PENDING' AND NOT EXISTS (SELECT 1 FROM user_block b WHERE (b.blocker_id=? AND b.blocked_id=u.id) OR (b.blocked_id=? AND b.blocker_id=u.id)) ORDER BY u.handle LIMIT 100",owner,owner,owner);
+  }
+  private Map<String,Object> decide(UUID requester,HttpServletRequest request,boolean accept) {
+    UUID owner=actor(request); available(owner,requester);
+    int changed=accept?db.update("UPDATE user_follow SET status='ACCEPTED' WHERE follower_id=? AND followed_id=? AND status='PENDING'",requester,owner)
+      :db.update("DELETE FROM user_follow WHERE follower_id=? AND followed_id=? AND status='PENDING'",requester,owner);
+    if(changed==0) throw error(HttpStatus.NOT_FOUND);
+    return Map.of("status",accept?"ACCEPTED":"NONE");
+  }
+  @PostMapping("/follow-requests/{id}/accept") public Map<String,Object> accept(@PathVariable UUID id,HttpServletRequest request) { return decide(id,request,true); }
+  @PostMapping("/follow-requests/{id}/reject") public Map<String,Object> reject(@PathVariable UUID id,HttpServletRequest request) { return decide(id,request,false); }
   @GetMapping("/me/summary") public Map<String,Object> mySummary(HttpServletRequest request) {
     UUID owner=actor(request);
     return Map.of("handle",db.queryForObject("SELECT handle FROM app_user WHERE id=?",String.class,owner),
@@ -147,14 +209,19 @@ public class GymBroApplication {
     return session(id,owner);
   }
   @PostMapping("/sessions/{id}/posts") @Transactional
-  public ResponseEntity<?> publish(@PathVariable UUID id,HttpServletRequest request) {
+  public ResponseEntity<?> publish(@PathVariable UUID id,@RequestBody(required=false) Publication in,HttpServletRequest request) {
+    String audience=in==null || in.audience()==null?"PUBLIC":in.audience();
+    if(!List.of("PUBLIC","FOLLOWERS").contains(audience)) throw error(HttpStatus.BAD_REQUEST);
     UUID owner=actor(request); UUID postId=UUID.randomUUID();
-    int inserted=db.update("INSERT INTO activity_post(id,author_id,session_id,title) SELECT ?,owner_id,id,title FROM workout_session WHERE id=? AND owner_id=? AND status='COMPLETED' ON CONFLICT(session_id) DO NOTHING",postId,id,owner);
+    int inserted=db.update("INSERT INTO activity_post(id,author_id,session_id,title,audience) SELECT ?,owner_id,id,title,? FROM workout_session WHERE id=? AND owner_id=? AND status='COMPLETED' ON CONFLICT(session_id) DO NOTHING",postId,audience,id,owner);
     List<UUID> found=db.query("SELECT id FROM activity_post WHERE session_id=? AND author_id=?",(r,n)->(UUID)r.getObject(1),id,owner);
     if(found.isEmpty()) throw error(HttpStatus.NOT_FOUND);
     return ResponseEntity.status(inserted==1?HttpStatus.CREATED:HttpStatus.OK).body(post(found.getFirst(),owner));
   }
-  private static final String VISIBLE="p.deleted_at IS NULL AND p.audience='PUBLIC' AND NOT EXISTS (SELECT 1 FROM user_block b WHERE (b.blocker_id=? AND b.blocked_id=p.author_id) OR (b.blocked_id=? AND b.blocker_id=p.author_id))";
+  private static final String VISIBLE="p.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM user_block b WHERE (b.blocker_id=? AND b.blocked_id=p.author_id) OR (b.blocked_id=? AND b.blocker_id=p.author_id))";
+  private static final String ACCEPTED="EXISTS (SELECT 1 FROM user_follow f WHERE f.follower_id=? AND f.followed_id=p.author_id AND f.status='ACCEPTED')";
+  private static final String DISCOVER=VISIBLE+" AND p.audience='PUBLIC' AND NOT u.is_private";
+  private static final String DETAIL=VISIBLE+" AND (p.author_id=? OR ("+ACCEPTED+" AND p.audience IN ('PUBLIC','FOLLOWERS')) OR (NOT u.is_private AND p.audience='PUBLIC'))";
   private List<Map<String,Object>> publicExercises(String payload) {
     try {
       JsonNode nodes=json.readTree(payload).path("exercises");
@@ -173,16 +240,52 @@ public class GymBroApplication {
   private Map<String,Object> publicRow(Map<String,Object> row) {
     return Map.of("id",row.get("id"),"authorId",row.get("author_id"),"author",row.get("handle"),"title",row.get("title"),"sport","STRENGTH","exerciseCount",row.get("exercise_count"),"date",row.get("day").toString(),"exercises",publicExercises((String)row.get("payload")));
   }
-  private static final String SELECT="SELECT p.id,p.author_id,u.handle,p.title,(p.published_at AT TIME ZONE 'UTC')::date AS day,jsonb_array_length(s.payload->'exercises') AS exercise_count,s.payload::text AS payload FROM activity_post p JOIN app_user u ON u.id=p.author_id JOIN workout_session s ON s.id=p.session_id WHERE ";
+  private static final String SELECT="SELECT p.id,p.author_id,u.handle,p.title,p.published_at,(p.published_at AT TIME ZONE 'UTC')::date AS day,jsonb_array_length(s.payload->'exercises') AS exercise_count,s.payload::text AS payload FROM activity_post p JOIN app_user u ON u.id=p.author_id JOIN workout_session s ON s.id=p.session_id WHERE ";
   private Map<String,Object> post(UUID id,UUID actor) {
-    List<Map<String,Object>> found=db.queryForList(SELECT+VISIBLE+" AND p.id=?",actor,actor,id);
+    List<Map<String,Object>> found=db.queryForList(SELECT+DETAIL+" AND p.id=?",actor,actor,actor,actor,id);
     if(found.isEmpty()) throw error(HttpStatus.NOT_FOUND);
     return publicRow(found.getFirst());
   }
   @GetMapping("/posts/{id}") public Map<String,Object> detail(@PathVariable UUID id,HttpServletRequest request) { return post(id,actor(request)); }
   @GetMapping("/feed") public List<Map<String,Object>> feed(HttpServletRequest request,@RequestParam(defaultValue="0") int offset) {
     UUID user=actor(request); if(offset<0 || offset>1000) throw error(HttpStatus.BAD_REQUEST);
-    return db.queryForList(SELECT+VISIBLE+" ORDER BY p.published_at DESC,p.id DESC LIMIT 20 OFFSET ?",user,user,offset).stream().map(this::publicRow).toList();
+    return db.queryForList(SELECT+DISCOVER+" ORDER BY p.published_at DESC,p.id DESC LIMIT 20 OFFSET ?",user,user,offset).stream().map(this::publicRow).toList();
+  }
+  private Object[] cursor(String value) {
+    if(value==null) return null;
+    try {
+      if(value.length()>150) throw new IllegalArgumentException();
+      String[] parts=new String(Base64.getUrlDecoder().decode(value),StandardCharsets.UTF_8).split("\\|",-1);
+      if(parts.length!=2) throw new IllegalArgumentException();
+      return new Object[]{Timestamp.from(Instant.parse(parts[0])),UUID.fromString(parts[1])};
+    } catch(IllegalArgumentException ex) { throw error(HttpStatus.BAD_REQUEST); }
+  }
+  private Map<String,Object> page(String filter,List<Object> params,int limit,String after) {
+    if(limit<1 || limit>20) throw error(HttpStatus.BAD_REQUEST);
+    Object[] cursor=cursor(after);
+    String sql=SELECT+filter+(cursor==null?"":" AND (p.published_at,p.id)<(?,?)")+" ORDER BY p.published_at DESC,p.id DESC LIMIT ?";
+    if(cursor!=null) { params.add(cursor[0]); params.add(cursor[1]); }
+    params.add(limit+1);
+    List<Map<String,Object>> rows=db.queryForList(sql,params.toArray());
+    boolean more=rows.size()>limit;
+    List<Map<String,Object>> items=rows.subList(0,Math.min(rows.size(),limit));
+    Map<String,Object> result=new LinkedHashMap<>();
+    result.put("items",items.stream().map(this::publicRow).toList());
+    Map<String,Object> last=items.isEmpty()?null:items.getLast();
+    result.put("nextCursor",more && last!=null?Base64.getUrlEncoder().withoutPadding().encodeToString(( ((Timestamp)last.get("published_at")).toInstant()+"|"+last.get("id")).getBytes(StandardCharsets.UTF_8)):null);
+    return result;
+  }
+  @GetMapping("/feed/following") public Map<String,Object> following(HttpServletRequest request,@RequestParam(defaultValue="20") int limit,@RequestParam(required=false) String cursor) {
+    UUID user=actor(request);
+    return page(VISIBLE+" AND "+ACCEPTED+" AND p.audience IN ('PUBLIC','FOLLOWERS')",new ArrayList<>(List.of(user,user,user)),limit,cursor);
+  }
+  @GetMapping("/users/{id}/posts") public Map<String,Object> profilePosts(@PathVariable UUID id,HttpServletRequest request,@RequestParam(defaultValue="20") int limit,@RequestParam(required=false) String cursor) {
+    UUID user=actor(request);
+    // Same post-level predicate as detail: no private-account bypass through profile browsing.
+    profile(id,request);
+    if(!id.equals(user) && db.queryForObject("SELECT count(*) FROM app_user WHERE id=? AND is_private",Integer.class,id)>0 &&
+      db.queryForObject("SELECT count(*) FROM user_follow WHERE follower_id=? AND followed_id=? AND status='ACCEPTED'",Integer.class,user,id)==0) throw error(HttpStatus.NOT_FOUND);
+    return page(DETAIL+" AND p.author_id=?",new ArrayList<>(List.of(user,user,user,user,id)),limit,cursor);
   }
   @PostMapping("/users/{id}/block") public ResponseEntity<?> block(@PathVariable UUID id,HttpServletRequest request) {
     UUID actor=actor(request); if(id.equals(actor)) throw error(HttpStatus.BAD_REQUEST);

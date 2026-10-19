@@ -15,6 +15,9 @@ class FakeApi extends Api {
   Map? workout;
   @override Future<dynamic> call(String method, String path, [Object? body]) async {
     if (path == '/me/summary') return {'handle': 'alice', 'sessions': sessions, 'publications': published ? 1 : 0};
+    if (path == '/me') return {'id':'alice','handle':'alice','private':false,'unit':'kg'};
+    if (path == '/me/follow-requests') return <dynamic>[];
+    if (path == '/feed/following') return {'items':<dynamic>[], 'nextCursor':null};
     if (path == '/exercises') return [{'name': 'Squat', 'category': 'Jambes', 'unit': 'kg'}, {'name': 'Tractions', 'category': 'Dos', 'unit': 'kg'}];
     if (path == '/feed') return (published || other) && !blocked ? [{'id': 'post-1', 'title': 'Leg day', 'author': 'alice', 'sport': 'STRENGTH', 'date': '2026-10-17'}] : [];
     if (path == '/sessions' && method == 'GET') return [];
@@ -39,6 +42,8 @@ class StartupApi extends Api {
     if (unauthorized) throw ApiUnauthorized();
     if (path == '/me') return pendingMe?.future ?? {'id': 'alice'};
     if (path == '/me/summary') return {'handle': 'alice', 'sessions': 0, 'publications': 0};
+    if (path == '/me/follow-requests') return <dynamic>[];
+    if (path == '/feed/following') return {'items':<dynamic>[], 'nextCursor':null};
     if (path == '/feed' || path == '/sessions') return [];
     throw StateError('Unexpected $method $path');
   }

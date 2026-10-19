@@ -1,0 +1,105 @@
+package dev.gymbro;
+
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.http.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+class SocialIntegrationTest {
+  @Autowired TestRestTemplate http;
+  record User(String token, String id, String handle) {}
+  HttpEntity<Object> req(Object body, String token) {
+    HttpHeaders h=new HttpHeaders(); h.setContentType(MediaType.APPLICATION_JSON);
+    if(token!=null) h.setBearerAuth(token);
+    return new HttpEntity<>(body,h);
+  }
+  ResponseEntity<Map> call(HttpMethod method,String path,Object body,String token) {
+    return http.exchange("/api/v1"+path,method,req(body,token),Map.class);
+  }
+  Map<?,?> ok(HttpMethod method,String path,Object body,String token,HttpStatus code) {
+    var r=call(method,path,body,token); assertThat(r.getStatusCode()).as(method+" "+path).isEqualTo(code); return r.getBody();
+  }
+  User user(String name) {
+    String handle=name+UUID.randomUUID().toString().substring(0,8);
+    var r=ok(HttpMethod.POST,"/auth/register",Map.of("handle",handle,"email",handle+"@example.test","password","local-demo-test-password"),null,HttpStatus.CREATED);
+    return new User(r.get("token").toString(),r.get("userId").toString(),handle);
+  }
+  String publish(User u,String title,String audience) {
+    var s=ok(HttpMethod.POST,"/sessions",Map.of("clientId",UUID.randomUUID().toString(),"title",title,"exercises",List.of(Map.of("name","Squat","sets",List.of(Map.of("reps",5,"weight",60,"unit","kg"))))),u.token(),HttpStatus.CREATED);
+    String id=s.get("id").toString(); ok(HttpMethod.POST,"/sessions/"+id+"/complete",Map.of(),u.token(),HttpStatus.OK);
+    return ok(HttpMethod.POST,"/sessions/"+id+"/posts",Map.of("audience",audience),u.token(),HttpStatus.CREATED).get("id").toString();
+  }
+  String following(User viewer) { return http.exchange("/api/v1/feed/following",HttpMethod.GET,req(null,viewer.token()),String.class).getBody(); }
+  String discover(User viewer) { return http.exchange("/api/v1/feed",HttpMethod.GET,req(null,viewer.token()),String.class).getBody(); }
+  @Test void publicPrivateRequestsBlockPrivacyAndPagination() {
+    User a=user("alice"), b=user("bravo"), c=user("charlie");
+    ok(HttpMethod.PUT,"/me/profile",Map.of("displayName","Athlète A","private",false,"unit","lb"),a.token(),HttpStatus.OK);
+    ok(HttpMethod.PUT,"/me/profile",Map.of("displayName","Athlète B","private",true,"unit","kg"),b.token(),HttpStatus.OK);
+    assertThat(http.exchange("/api/v1/users?query=Athl",HttpMethod.GET,req(null,c.token()),String.class).getBody()).contains(a.handle(),b.handle()).doesNotContain("email","password_hash");
+    assertThat(call(HttpMethod.GET,"/users/"+b.id(),null,c.token()).getBody().toString()).contains("private=true").doesNotContain("email");
+    assertThat(call(HttpMethod.POST,"/users/"+a.id()+"/follow",Map.of(),a.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    ok(HttpMethod.POST,"/users/"+a.id()+"/follow",Map.of(),c.token(),HttpStatus.OK);
+    ok(HttpMethod.POST,"/users/"+a.id()+"/follow",Map.of(),c.token(),HttpStatus.OK);
+    String ap=publish(a,"PublicA", "PUBLIC");
+    assertThat(following(c)).contains("PublicA");
+    ok(HttpMethod.DELETE,"/users/"+a.id()+"/follow",null,c.token(),HttpStatus.OK);
+    assertThat(following(c)).doesNotContain("PublicA");
+    String bp=publish(b,"PrivateB", "PUBLIC");
+    assertThat(discover(c)).doesNotContain("PrivateB");
+    assertThat(call(HttpMethod.GET,"/posts/"+bp,null,c.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.GET,"/users/"+b.id()+"/posts",null,c.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    ok(HttpMethod.POST,"/users/"+b.id()+"/follow",Map.of(),a.token(),HttpStatus.ACCEPTED);
+    assertThat(following(a)).doesNotContain("PrivateB");
+    assertThat(call(HttpMethod.POST,"/follow-requests/"+a.id()+"/accept",Map.of(),c.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    ok(HttpMethod.POST,"/follow-requests/"+a.id()+"/accept",Map.of(),b.token(),HttpStatus.OK);
+    assertThat(following(a)).contains("PrivateB");
+    assertThat(call(HttpMethod.GET,"/posts/"+bp,null,a.token()).getStatusCode()).isEqualTo(HttpStatus.OK);
+    String followerPost=publish(b,"FollowerB", "FOLLOWERS");
+    assertThat(following(a)).contains("FollowerB");
+    assertThat(discover(a)).doesNotContain("FollowerB");
+    assertThat(call(HttpMethod.GET,"/posts/"+followerPost,null,c.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    ok(HttpMethod.POST,"/users/"+a.id()+"/block",Map.of(),b.token(),HttpStatus.CREATED);
+    assertThat(following(a)).doesNotContain("PrivateB","FollowerB");
+    assertThat(call(HttpMethod.GET,"/posts/"+bp,null,a.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.GET,"/users/"+b.id(),null,a.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.GET,"/posts/"+ap,null,c.token()).getStatusCode()).isEqualTo(HttpStatus.OK);
+    ok(HttpMethod.POST,"/users/"+a.id()+"/follow",Map.of(),c.token(),HttpStatus.OK);
+    String first=publish(a,"FirstPage", "PUBLIC"), second=publish(a,"SecondPage", "PUBLIC");
+    var page=ok(HttpMethod.GET,"/feed/following?limit=1",null,c.token(),HttpStatus.OK);
+    assertThat(page.get("items").toString()).contains(second).doesNotContain(first);
+    String cursor=page.get("nextCursor").toString();
+    var next=ok(HttpMethod.GET,"/feed/following?limit=1&cursor="+cursor,null,c.token(),HttpStatus.OK);
+    assertThat(next.get("items").toString()).contains(first).doesNotContain(second);
+    assertThat(call(HttpMethod.GET,"/feed/following?cursor=bad",null,c.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+  }
+  @Test void rejectionAndPrivacyToggleNeverExposeHistoricalPublicPosts() {
+    User owner=user("delta"), viewer=user("echo"), stranger=user("foxtrot");
+    String id=publish(owner,"OriginallyPublic", "PUBLIC");
+    assertThat(discover(stranger)).contains("OriginallyPublic");
+    ok(HttpMethod.PUT,"/me/profile",Map.of("displayName","Privé","private",true,"unit","kg"),owner.token(),HttpStatus.OK);
+    assertThat(discover(stranger)).doesNotContain("OriginallyPublic");
+    assertThat(call(HttpMethod.GET,"/posts/"+id,null,stranger.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.GET,"/users/"+owner.id()+"/posts",null,stranger.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.GET,"/users/"+owner.id()+"/posts",null,owner.token()).getStatusCode()).isEqualTo(HttpStatus.OK);
+    ok(HttpMethod.POST,"/users/"+owner.id()+"/follow",Map.of(),viewer.token(),HttpStatus.ACCEPTED);
+    assertThat(http.exchange("/api/v1/me/follow-requests",HttpMethod.GET,req(null,owner.token()),String.class).getBody()).contains(viewer.handle());
+    assertThat(call(HttpMethod.POST,"/follow-requests/"+viewer.id()+"/reject",Map.of(),stranger.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    ok(HttpMethod.POST,"/follow-requests/"+viewer.id()+"/reject",Map.of(),owner.token(),HttpStatus.OK);
+    assertThat(following(viewer)).doesNotContain("OriginallyPublic");
+    assertThat(call(HttpMethod.POST,"/follow-requests/"+viewer.id()+"/accept",Map.of(),owner.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    ok(HttpMethod.POST,"/users/"+owner.id()+"/follow",Map.of(),viewer.token(),HttpStatus.ACCEPTED);
+    ok(HttpMethod.POST,"/follow-requests/"+viewer.id()+"/accept",Map.of(),owner.token(),HttpStatus.OK);
+    assertThat(following(viewer)).contains("OriginallyPublic");
+    ok(HttpMethod.DELETE,"/users/"+owner.id()+"/follow",null,viewer.token(),HttpStatus.OK);
+    assertThat(call(HttpMethod.GET,"/posts/"+id,null,viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    ok(HttpMethod.POST,"/users/"+viewer.id()+"/block",Map.of(),owner.token(),HttpStatus.CREATED);
+    assertThat(http.exchange("/api/v1/users?query="+viewer.handle(),HttpMethod.GET,req(null,owner.token()),String.class).getBody()).doesNotContain(viewer.id());
+    assertThat(call(HttpMethod.POST,"/users/"+viewer.id()+"/follow",Map.of(),owner.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+  }
+}

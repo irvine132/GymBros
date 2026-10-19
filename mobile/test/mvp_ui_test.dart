@@ -13,6 +13,9 @@ class MvpApi extends Api {
     if (path == '/feed') return posts;
     if (path == '/sessions') return [];
     if (path == '/me/summary') return {'handle': 'alice', 'sessions': completed, 'publications': 0};
+    if (path == '/me') return {'id':'alice','handle':'alice','private':false,'unit':'kg'};
+    if (path == '/me/follow-requests') return <dynamic>[];
+    if (path == '/feed/following') return {'items':<dynamic>[], 'nextCursor':null};
     if (path == '/exercises') return [{'name': 'Squat', 'category': 'Jambes', 'unit': 'kg'}, {'name': 'Tractions', 'category': 'Dos', 'unit': 'kg'}];
     throw StateError('Unexpected $method $path');
   }

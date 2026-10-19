@@ -9,16 +9,19 @@ import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, unquote_plus
 
 PREFIX = '/gym-bro/api/v1'
 UUID = r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
 ROUTES = {
-    'GET': (r'/me', r'/me/summary', r'/exercises', r'/feed', r'/sessions', rf'/sessions/{UUID}', rf'/posts/{UUID}'),
+    'GET': (r'/me', r'/me/summary', r'/me/follow-requests', r'/exercises', r'/feed', r'/feed/following',
+            r'/users', rf'/users/{UUID}', rf'/users/{UUID}/posts', r'/sessions', rf'/sessions/{UUID}', rf'/posts/{UUID}'),
     'POST': (r'/auth/register', r'/auth/login', r'/auth/logout', r'/sessions',
              rf'/sessions/{UUID}/complete', rf'/sessions/{UUID}/posts',
-             rf'/posts/{UUID}/reports', rf'/users/{UUID}/block'),
-    'PUT': (rf'/sessions/{UUID}',),
+             rf'/posts/{UUID}/reports', rf'/users/{UUID}/block', rf'/users/{UUID}/follow',
+             rf'/follow-requests/{UUID}/accept', rf'/follow-requests/{UUID}/reject'),
+    'PUT': (r'/me/profile', rf'/sessions/{UUID}'),
+    'DELETE': (rf'/users/{UUID}/follow',),
 }
 _lock = threading.Lock()
 _windows = {'auth': [], 'write': []}
@@ -36,8 +39,14 @@ def route(method, target):
         return None
     if not any(re.fullmatch(pattern, suffix) for pattern in ROUTES.get(method, ())):
         return None
-    if parsed.query and not (method == 'GET' and suffix == '/feed' and
-                             re.fullmatch(r'offset=(0|[1-9][0-9]{0,3})', parsed.query)):
+    paged = suffix == '/feed/following' or re.fullmatch(rf'/users/{UUID}/posts', suffix)
+    if parsed.query and not (method == 'GET' and (
+        (suffix == '/feed' and re.fullmatch(r'offset=(0|[1-9][0-9]{0,3})', parsed.query)) or
+        (suffix == '/users' and re.fullmatch(r'query=[A-Za-z0-9_%+-]{2,180}', parsed.query) and
+         2 <= len(unquote_plus(parsed.query[6:])) <= 60 and
+         all(ch.isalnum() or ch in ' _-' for ch in unquote_plus(parsed.query[6:]))) or
+        (paged and re.fullmatch(r'(?:limit=(?:[1-9]|1[0-9]|20)(?:&cursor=[A-Za-z0-9_-]{1,150})?|cursor=[A-Za-z0-9_-]{1,150})', parsed.query))
+    )):
         return None
     return '/api/v1' + suffix + (('?' + parsed.query) if parsed.query else '')
 
@@ -64,6 +73,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self): self.forward('GET')
     def do_POST(self): self.forward('POST')
     def do_PUT(self): self.forward('PUT')
+    def do_DELETE(self): self.forward('DELETE')
 
     def forward(self, method):
         target = route(method, self.path)

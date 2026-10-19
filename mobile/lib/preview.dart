@@ -6,7 +6,7 @@ import 'main.dart';
 // Entrypoint séparé : jamais utilisé par l'APK de test ni l'application standard.
 class PreviewApi extends Api {
   Map? workout;
-  bool published = false;
+  bool published = false, following = false;
   @override Future<dynamic> call(String method, String path, [Object? body]) async {
     if (path == '/feed') { return published ? [
       {'id': 'demo-post', 'title': workout?['title'] ?? 'Force du lundi', 'author': 'demo_athlete',
@@ -24,6 +24,19 @@ class PreviewApi extends Api {
     if (path == '/sessions/demo-session/posts') { published = true; return {'id': 'demo-post'}; }
     if (path == '/posts/demo-post') return (await call('GET', '/feed') as List).first;
     if (path == '/me/summary') return {'handle': 'demo_athlete', 'sessions': workout == null ? 0 : 1, 'publications': published ? 1 : 0};
+    if (path == '/me') return {'id':'preview-fixture','handle':'demo_athlete','private':false,'unit':'kg'};
+    if (path == '/me/follow-requests') return <dynamic>[];
+    if (path == '/feed/following') { return {'items': following ? [
+      {'id':'demo-social-post','authorId':'demo-bravo','author':'bravo_demo','title':'Squat du matin · démo',
+       'sport':'STRENGTH','date':'2026-10-19','exercises':[{'name':'Squat','sets':[{'reps':5,'weight':80,'unit':'kg'}]}]}
+    ] : <dynamic>[], 'nextCursor':null}; }
+    if (path.startsWith('/users?query=')) { return [{'id':'demo-bravo','handle':'bravo_demo','displayName':'Bravo (démo)',
+      'private':false,'relation':following ? 'ACCEPTED' : 'NONE'}]; }
+    if (path == '/users/demo-bravo') { return {'id':'demo-bravo','handle':'bravo_demo','displayName':'Bravo (démo)',
+      'private':false,'relation':following ? 'ACCEPTED' : 'NONE'}; }
+    if (path == '/users/demo-bravo/posts') return {'items':(await call('GET','/feed/following') as Map)['items'], 'nextCursor':null};
+    if (path == '/users/demo-bravo/follow') { following = method == 'POST'; return {'status': following ? 'ACCEPTED' : 'NONE'}; }
+    if (path == '/posts/demo-social-post') return ((await call('GET','/feed/following') as Map)['items'] as List).first;
     if (path == '/exercises') { return [
       {'name': 'Squat', 'category': 'Jambes', 'unit': 'kg'},
       {'name': 'Soulevé de terre', 'category': 'Jambes', 'unit': 'kg'},
