@@ -1,7 +1,7 @@
 name: Slice A checks
 on:
   push:
-    branches: [dev/slice-a]
+    branches: [dev/slice-a, dev/auth-form-messages]
   pull_request:
 permissions:
   contents: read
