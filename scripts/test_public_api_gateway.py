@@ -14,6 +14,13 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(route('POST', '/api/v1/users/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/follow'), '/api/v1/users/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/follow')
         self.assertEqual(route('DELETE', '/api/v1/users/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/follow'), '/api/v1/users/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/follow')
         self.assertEqual(route('PUT', '/api/v1/me/profile'), '/api/v1/me/profile')
+        identifier = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        for method, path in [('GET', '/templates'), ('GET', f'/templates/{identifier}'),
+                             ('PUT', f'/templates/{identifier}'), ('POST', f'/posts/{identifier}/copy'),
+                             ('POST', f'/templates/{identifier}/sessions')]:
+            self.assertEqual(route(method, '/gym-bro/api/v1' + path), '/api/v1' + path)
+        self.assertIsNone(route('GET', '/api/v1/templates?owner=other'))
+        self.assertIsNone(route('DELETE', '/api/v1/templates/' + identifier))
         self.assertIsNone(route('GET', '/api/v1/users?query=%2e%2e%2fadmin'))
         self.assertIsNone(route('GET', '/api/v1/feed/following?cursor=%0a'))
         self.assertEqual(route('GET', '/api/v1/feed?offset=1'), '/api/v1/feed?offset=1')

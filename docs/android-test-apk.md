@@ -1,6 +1,12 @@
-# APK Android de test — Slice A
+# APK Android de test — incréments Gym Bro
 
-## Candidat 2012 — profils et abonnements (Slice B, distribution suspendue)
+## Tranche C — copie et adaptation (candidat 2013)
+
+Build demandé depuis `dev/mvp-product-ui` avec `--build-number=13` (APK ARM64 versionCode 2013), API HTTPS de test existante et même application/certificat test ; chemins/hash/validation dans le manifeste exact-SHA de la carte. La source ajoute copie autorisée → modèle personnel ajustable → brouillon existant → fin privée → publication distincte avec attribution conditionnelle. L'API et le gateway test doivent être actualisés et validés après revue indépendante de permissions **avant** distribution comme parcours utilisable ; ne pas installer/désinstaller ou toucher aux données d'un appareil dans ce run. Aucun Pixel connecté n'est présumé. Les captures web DÉMO ne prouvent pas un lancement Android réel.
+
+## Candidat 2012 — profils et abonnements (Slice B, historique avant distribution)
+
+Note postérieure à ce bloc historique : verdict indépendant favorable sur `eaee583`, services TEST actualisés avec smoke authentifié deux comptes, puis APK2012 remis dans le fil de test (message 1561731615791784158). Les interdictions ci-dessous décrivent l'état **au build avant** ces vérifications et ne constituent plus le statut courant de 2012. Aucun test Pixel natif n'a été ajouté par cette remise.
 
 APK ARM64 construit depuis `dev/mvp-product-ui` : `/srv/hermes-dev/toolchains/gym-bro/artifacts/gym-bro-mvp-social-0.1.0+2012-arm64.apk`, 18 792 466 octets, SHA-256 `ae30a966bb51fd11fa9195b65aa2b7b7371dce87e9311a89e76af4618da72d3f`. `dev.gymbro.prototype`, versionCode 2012, versionName 0.1.0, min24/target36 ; signature v2 PASS, certificat de test identique aux versions 2009/2011 `d4f92da861ae3835a41e7f776a1dc309795976628fea16e666df95c70f5431c8`. URL HTTPS AOT et contrat JNI DEX PASS. `adb devices -l` vide : pas d'installation ni validation Android réelle. Ne **pas** proposer cette mise à jour comme parcours utilisable tant que la nouvelle API/gateway test ne sert pas les endpoints Slice B et que revue indépendante des droits n'est pas favorable ; les unités actives servent encore le code 2011. L'appel `systemctl --user restart gymbro-mvp-api.service gymbro-mvp-gateway.service` a été refusé par le contrôle de commandes de cette session headless ; aucune mutation des services n'a eu lieu. L'APK peut être joint comme candidat technique, sans annoncer un accès fonctionnel à la tranche B en HTTPS pour l'instant.
 

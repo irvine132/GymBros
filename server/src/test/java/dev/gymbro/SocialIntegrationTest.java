@@ -102,4 +102,44 @@ class SocialIntegrationTest {
     assertThat(http.exchange("/api/v1/users?query="+viewer.handle(),HttpMethod.GET,req(null,owner.token()),String.class).getBody()).doesNotContain(viewer.id());
     assertThat(call(HttpMethod.POST,"/users/"+viewer.id()+"/follow",Map.of(),owner.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
   }
+  @Test void copyEditStartCompletePublishWithRevokedProvenance() {
+    User author=user("source"), copier=user("copier"), third=user("outsider");
+    String source=publish(author,"Original", "PUBLIC");
+    String restricted=publish(author,"Followers only", "FOLLOWERS");
+    assertThat(call(HttpMethod.POST,"/posts/"+restricted+"/copy",Map.of(),copier.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.POST,"/posts/"+restricted+"/copy",Map.of(),third.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    ok(HttpMethod.POST,"/users/"+author.id()+"/follow",Map.of(),copier.token(),HttpStatus.OK);
+    assertThat(call(HttpMethod.POST,"/posts/"+restricted+"/copy",Map.of(),copier.token()).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    String path="/posts/"+source+"/copy";
+    var copied=ok(HttpMethod.POST,path,Map.of(),copier.token(),HttpStatus.CREATED);
+    String id=copied.get("id").toString();
+    assertThat(ok(HttpMethod.POST,path,Map.of(),copier.token(),HttpStatus.OK).get("id")).isEqualTo(id);
+    assertThat(copied.toString()).contains("Squat", "60",author.handle()).doesNotContain("completedAt","startedAt","clientId","email");
+    assertThat(call(HttpMethod.GET,"/templates/"+id,null,third.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.PUT,"/templates/"+id,Map.of("title","Steal"),third.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.POST,"/templates/"+id+"/sessions",Map.of("clientId",UUID.randomUUID().toString()),third.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.PUT,"/templates/"+id,Map.of("title","Invalid","exercises",List.of(Map.of("name","Squat","sets",List.of(Map.of("reps",0,"weight",-1,"unit","kg"))))),copier.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    var edited=ok(HttpMethod.PUT,"/templates/"+id,Map.of("title","Mon squat","exercises",List.of(Map.of("name","Squat","sets",List.of(Map.of("reps",8,"weight",40,"unit","lb"))))),copier.token(),HttpStatus.OK);
+    assertThat(edited.get("version")).isEqualTo(2);
+    assertThat(http.exchange("/api/v1/templates",HttpMethod.GET,req(null,copier.token()),String.class).getBody()).contains("Mon squat");
+    String clientId=UUID.randomUUID().toString();
+    var started=ok(HttpMethod.POST,"/templates/"+id+"/sessions",Map.of("clientId",clientId),copier.token(),HttpStatus.CREATED);
+    String session=started.get("id").toString();
+    assertThat(ok(HttpMethod.POST,"/templates/"+id+"/sessions",Map.of("clientId",clientId),copier.token(),HttpStatus.OK).get("id")).isEqualTo(session);
+    assertThat(started.toString()).contains("Mon squat","lb","40");
+    assertThat(call(HttpMethod.GET,"/sessions/"+session,null,third.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    ok(HttpMethod.POST,"/sessions/"+session+"/complete",Map.of(),copier.token(),HttpStatus.OK);
+    String copyPost=ok(HttpMethod.POST,"/sessions/"+session+"/posts",Map.of("audience","PUBLIC"),copier.token(),HttpStatus.CREATED).get("id").toString();
+    assertThat(call(HttpMethod.GET,"/posts/"+source,null,third.token()).getBody().toString()).contains("60").doesNotContain("Mon squat");
+    assertThat(call(HttpMethod.GET,"/posts/"+copyPost,null,third.token()).getBody().toString()).contains("Mon squat","sourcePostId",source);
+    ok(HttpMethod.DELETE,"/users/"+author.id()+"/follow",null,copier.token(),HttpStatus.OK);
+    ok(HttpMethod.PUT,"/me/profile",Map.of("displayName","Privé","private",true,"unit","kg"),author.token(),HttpStatus.OK);
+    assertThat(call(HttpMethod.POST,path,Map.of(),third.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.POST,path,Map.of(),copier.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.GET,"/templates/"+id,null,copier.token()).getBody().toString()).contains("sourceUnavailable=true").doesNotContain(source,author.handle());
+    assertThat(call(HttpMethod.GET,"/sessions/"+session,null,copier.token()).getBody().toString()).contains("sourceUnavailable=true").doesNotContain(source,author.handle());
+    assertThat(call(HttpMethod.GET,"/posts/"+copyPost,null,third.token()).getBody().toString()).contains("sourceUnavailable=true").doesNotContain(source,author.handle());
+    ok(HttpMethod.POST,"/users/"+copier.id()+"/block",Map.of(),author.token(),HttpStatus.CREATED);
+    assertThat(call(HttpMethod.POST,path,Map.of(),copier.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+  }
 }

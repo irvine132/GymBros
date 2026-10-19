@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import 'native_diagnostic_io.dart'
     if (dart.library.js_interop) 'native_diagnostic_web.dart' as native;
+import 'template_screen.dart';
 
 const apiBase = String.fromEnvironment('API_BASE', defaultValue: 'http://127.0.0.1:18081/api/v1');
 const diagnosticBuild = String.fromEnvironment('DIAGNOSTIC_BUILD', defaultValue: 'unknown');
@@ -336,7 +337,7 @@ class HomeScreen extends StatefulWidget {
 }
 class _HomeScreenState extends State<HomeScreen> {
   int tab = 0;
-  List<dynamic> feed = [], history = [];
+  List<dynamic> feed = [], history = [], templates = [];
   List<dynamic> followed = [], requests = [];
   Map<String, dynamic>? profile, settings;
   String? followCursor;
@@ -374,6 +375,23 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) { if (mounted) setState(() => error = 'Page indisponible. Réessayez.'); }
     finally { if (mounted) setState(() => busy = false); }
   }
+  Future<void> loadTemplates() async {
+    try {
+      final items = await widget.api.call('GET', '/templates') as List;
+      if (mounted) setState(() { templates = items; error = null; });
+    } catch (_) { if (mounted) setState(() => error = 'Modèles indisponibles. Réessayez.'); }
+  }
+  Future<void> editTemplate(Map item) async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => TemplateScreen(
+      api: widget.api, store: widget.store, userId: widget.userId, template: item)));
+    if (mounted) { await loadTemplates(); refresh(); }
+  }
+  Future<void> copyPost(String id) async {
+    try {
+      final item = await widget.api.call('POST', '/posts/$id/copy', {}) as Map;
+      if (mounted) await editTemplate(item);
+    } catch (_) { if (mounted) setState(() => error = 'Copie indisponible : accès retiré ou connexion interrompue. Réessayez.'); }
+  }
   Future<void> openPost(String id) async {
     try {
       final post = await widget.api.call('GET', '/posts/$id') as Map;
@@ -389,8 +407,11 @@ class _HomeScreenState extends State<HomeScreen> {
             for (final set in (exercise['sets'] as List? ?? []))
               Text('${set['reps']} répétitions · ${set['weight']} ${set['unit']}'),
           ],
+          if (post['sourceAuthor'] != null) Text('Inspiré de @${post['sourceAuthor']}'),
+          if (post['sourceUnavailable'] == true) const Text('Source non disponible'),
         ])),
         actions: [
+          TextButton(onPressed: () { Navigator.pop(context); copyPost(id); }, child: const Text('Copier et essayer')),
           if (post['authorId'] != null && post['authorId'] != widget.userId) ...[
             TextButton(onPressed: () async {
               Navigator.pop(context);
@@ -525,6 +546,16 @@ class _HomeScreenState extends State<HomeScreen> {
   ]);
   Widget historyView() => ListView(padding: const EdgeInsets.all(16), children: [
     Text('Mes séances', style: Theme.of(context).textTheme.headlineLarge),
+    const SizedBox(height: 8), const Text('Tes modèles restent personnels. Adapte-les avant de démarrer une nouvelle séance.'),
+    const SizedBox(height: 12), Text('Mes modèles', style: Theme.of(context).textTheme.titleLarge),
+    if (templates.isEmpty) gymCard(child: const Text('Aucun modèle. Ouvre une séance visible du fil et choisis « Copier et essayer ».')),
+    for (final item in templates) gymCard(child: ListTile(
+      title: Text('${item['title']}'),
+      subtitle: Text(item['sourceAuthor'] != null ? 'Inspiré de @${item['sourceAuthor']} · personnel'
+        : item['sourceUnavailable'] == true ? 'Source non disponible · personnel' : 'Modèle personnel'),
+      trailing: const Icon(Icons.chevron_right), onTap: () => editTemplate(item as Map))),
+    TextButton(onPressed: loadTemplates, child: const Text('Actualiser mes modèles')),
+    const SizedBox(height: 12), Text('Historique privé', style: Theme.of(context).textTheme.titleLarge),
     const SizedBox(height: 12),
     if (widget.store.read(widget.userId) != null) gymCard(child: ListTile(
       leading: const Icon(Icons.edit_note), title: const Text('Brouillon sur cet appareil'),
@@ -565,7 +596,7 @@ class _HomeScreenState extends State<HomeScreen> {
       Expanded(child: switch (tab) { 0 => feedView(), 1 => historyView(), _ => profileView() }),
     ]),
     floatingActionButton: tab == 0 ? null : FloatingActionButton.extended(onPressed: train, icon: const Icon(Icons.fitness_center), label: Text(widget.store.read(widget.userId) == null ? 'Nouvelle séance' : 'Reprendre')),
-    bottomNavigationBar: NavigationBar(selectedIndex: tab, onDestinationSelected: (i) => setState(() => tab = i), destinations: const [NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Accueil'), NavigationDestination(icon: Icon(Icons.fitness_center_outlined), label: 'Entraînement'), NavigationDestination(icon: Icon(Icons.person_outline), label: 'Profil')]),
+    bottomNavigationBar: NavigationBar(selectedIndex: tab, onDestinationSelected: (i) { setState(() => tab = i); if (i == 1) loadTemplates(); }, destinations: const [NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Accueil'), NavigationDestination(icon: Icon(Icons.fitness_center_outlined), label: 'Entraînement'), NavigationDestination(icon: Icon(Icons.person_outline), label: 'Profil')]),
   );
 }
 
@@ -674,6 +705,7 @@ class WorkoutScreen extends StatefulWidget {
 class SetEntry {
   final reps = TextEditingController(), weight = TextEditingController();
   bool checked = false;
+  String unit = 'kg';
   void dispose() { reps.dispose(); weight.dispose(); }
 }
 class ExerciseEntry {
@@ -703,7 +735,8 @@ class _WorkoutScreenState extends State<WorkoutScreen> {
       if (savedSets != null && savedSets.isNotEmpty) {
         sets.first.dispose(); sets.clear();
         for (final entry in savedSets) {
-          final set = SetEntry(); set.reps.text = '${entry['reps'] ?? ''}'; set.weight.text = '${entry['weight'] ?? ''}'; set.checked = entry['checked'] == true; sets.add(set);
+          final set = SetEntry(); set.reps.text = '${entry['reps'] ?? ''}'; set.weight.text = '${entry['weight'] ?? ''}'; set.checked = entry['checked'] == true;
+          set.unit = '${entry['unit'] ?? unit}'; sets.add(set);
         }
       }
       for (final item in savedExercises?.skip(1) ?? []) {
@@ -711,6 +744,7 @@ class _WorkoutScreenState extends State<WorkoutScreen> {
         additional.sets.first.dispose(); additional.sets.clear();
         for (final entry in (item['sets'] as List? ?? [])) {
           final set = SetEntry()..checked = entry['checked'] == true;
+          set.unit = '${entry['unit'] ?? unit}';
           set.reps.text = '${entry['reps'] ?? ''}'; set.weight.text = '${entry['weight'] ?? ''}';
           additional.sets.add(set);
         }
@@ -726,7 +760,7 @@ class _WorkoutScreenState extends State<WorkoutScreen> {
     } catch (_) { if (mounted) setState(() => error = 'Catalogue indisponible. Réessayez.'); }
   }
   Map<String, dynamic> snapshotExercise(String name, List<SetEntry> entries) => {'name': name,
-    'sets': entries.map((s) => {'reps': s.reps.text, 'weight': s.weight.text, 'checked': s.checked}).toList()};
+    'sets': entries.map((s) => {'reps': s.reps.text, 'weight': s.weight.text, 'checked': s.checked, 'unit': s.unit}).toList()};
   Map<String, dynamic> get draft => {'clientId': clientId, 'title': title.text, 'unit': unit,
     'exercises': [snapshotExercise(exercise.text, sets), for (final item in moreExercises) snapshotExercise(item.name.text, item.sets)]};
   Future<void> save() async {
@@ -754,7 +788,7 @@ class _WorkoutScreenState extends State<WorkoutScreen> {
           if (n == null || n < 1 || n > 1000 || w == null || w < 0 || w > 10000 || (w * 100).roundToDouble() != w * 100) {
             throw const FormatException('Série : 1 à 1000 répétitions, charge de 0 à 10000 avec deux décimales maximum.');
           }
-          results.add({'reps': n, 'weight': w, 'unit': unit});
+          results.add({'reps': n, 'weight': w, 'unit': set.unit});
         }
         exercises.add({'name': name.trim(), 'sets': results});
       }
@@ -779,7 +813,7 @@ class _WorkoutScreenState extends State<WorkoutScreen> {
       Expanded(child: TextField(controller: set.reps, onChanged: (_) => save(), keyboardType: TextInputType.number,
         decoration: const InputDecoration(labelText: 'Répétitions'))),
       const SizedBox(width: 10), Expanded(child: TextField(controller: set.weight, onChanged: (_) => save(),
-        keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: InputDecoration(labelText: 'Charge ($unit)'))),
+        keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: InputDecoration(labelText: 'Charge (${set.unit})'))),
     ]),
     CheckboxListTile(contentPadding: EdgeInsets.zero, value: set.checked, title: const Text('Série validée'),
       onChanged: (value) { setState(() => set.checked = value ?? false); save(); }),
@@ -793,7 +827,7 @@ class _WorkoutScreenState extends State<WorkoutScreen> {
         label: Text('${item['name']}'), onPressed: () { name.text = '${item['name']}'; setState(() {}); save(); })),
     ])),
     for (var i = 0; i < series.length; i++) setFields(series[i], i),
-    OutlinedButton.icon(onPressed: series.length >= 30 ? null : () { setState(() => series.add(SetEntry())); save(); },
+    OutlinedButton.icon(onPressed: series.length >= 30 ? null : () { setState(() => series.add(SetEntry()..unit = unit)); save(); },
       icon: const Icon(Icons.add), label: const Text('Ajouter une série')),
     const SizedBox(height: 20),
   ]);
@@ -803,10 +837,13 @@ class _WorkoutScreenState extends State<WorkoutScreen> {
       const SizedBox(height: 8), const Text('Chaque série se coche en un geste. Quitte l’écran quand tu veux : le brouillon reste sur cet appareil, privé.'),
       const SizedBox(height: 22), TextField(key: const Key('workout-title'), controller: title, onChanged: (_) => save(), decoration: const InputDecoration(labelText: 'Nom de ta séance')),
       const SizedBox(height: 12), DropdownButtonFormField<String>(initialValue: unit, decoration: const InputDecoration(labelText: 'Unité des charges'),
-        items: ['kg', 'lb'].map((u) => DropdownMenuItem(value: u, child: Text(u))).toList(), onChanged: (value) { setState(() => unit = value!); save(); }),
+        items: ['kg', 'lb'].map((u) => DropdownMenuItem(value: u, child: Text(u))).toList(), onChanged: (value) { setState(() {
+          unit = value!; for (final set in sets) { set.unit = unit; }
+          for (final entry in moreExercises) { for (final set in entry.sets) { set.unit = unit; } }
+        }); save(); }),
       const SizedBox(height: 24), exerciseFields(exercise, sets, 0),
       for (var i = 0; i < moreExercises.length; i++) exerciseFields(moreExercises[i].name, moreExercises[i].sets, i + 1),
-      OutlinedButton.icon(onPressed: moreExercises.length >= 19 ? null : () { setState(() => moreExercises.add(ExerciseEntry())); save(); },
+      OutlinedButton.icon(onPressed: moreExercises.length >= 19 ? null : () { setState(() => moreExercises.add(ExerciseEntry()..sets.first.unit = unit)); save(); },
         icon: const Icon(Icons.add), label: const Text('Ajouter un exercice')),
       if (error != null) Text(error!, style: const TextStyle(color: Colors.red)),
       if (error == 'Catalogue indisponible. Réessayez.') TextButton(onPressed: loadCatalogue, child: const Text('Réessayer le catalogue')),

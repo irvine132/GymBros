@@ -15,12 +15,14 @@ PREFIX = '/gym-bro/api/v1'
 UUID = r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
 ROUTES = {
     'GET': (r'/me', r'/me/summary', r'/me/follow-requests', r'/exercises', r'/feed', r'/feed/following',
+            r'/templates', rf'/templates/{UUID}',
             r'/users', rf'/users/{UUID}', rf'/users/{UUID}/posts', r'/sessions', rf'/sessions/{UUID}', rf'/posts/{UUID}'),
     'POST': (r'/auth/register', r'/auth/login', r'/auth/logout', r'/sessions',
              rf'/sessions/{UUID}/complete', rf'/sessions/{UUID}/posts',
-             rf'/posts/{UUID}/reports', rf'/users/{UUID}/block', rf'/users/{UUID}/follow',
+             rf'/posts/{UUID}/reports', rf'/posts/{UUID}/copy', rf'/templates/{UUID}/sessions',
+             rf'/users/{UUID}/block', rf'/users/{UUID}/follow',
              rf'/follow-requests/{UUID}/accept', rf'/follow-requests/{UUID}/reject'),
-    'PUT': (r'/me/profile', rf'/sessions/{UUID}'),
+    'PUT': (r'/me/profile', rf'/sessions/{UUID}', rf'/templates/{UUID}'),
     'DELETE': (rf'/users/{UUID}/follow',),
 }
 _lock = threading.Lock()

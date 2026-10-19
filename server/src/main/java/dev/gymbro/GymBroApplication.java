@@ -43,6 +43,8 @@ public class GymBroApplication {
   record Report(String reason) {}
   record ProfileUpdate(String displayName, @JsonProperty("private") Boolean privateAccount, String unit) {}
   record Publication(String audience) {}
+  record TemplateDefinition(String title, List<Exercise> exercises) {}
+  record StartTemplate(UUID clientId) {}
   private ResponseStatusException error(HttpStatus code) { return new ResponseStatusException(code); }
   private String digest(String token) {
     try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.UTF_8))); }
@@ -175,10 +177,14 @@ public class GymBroApplication {
     try { return json.writeValueAsString(in); } catch(Exception ex) { throw error(HttpStatus.BAD_REQUEST); }
   }
   private Map<String,Object> session(UUID id, UUID owner) {
-    List<Map<String,Object>> found=db.queryForList("SELECT s.id,s.client_id,s.title,s.payload::text AS payload,s.status,s.started_at,s.completed_at,s.result_schema_version,EXISTS(SELECT 1 FROM activity_post p WHERE p.session_id=s.id AND p.deleted_at IS NULL) AS published FROM workout_session s WHERE s.id=? AND s.owner_id=?",id,owner);
+    List<Map<String,Object>> found=db.queryForList("SELECT s.id,s.client_id,s.title,s.payload::text AS payload,s.status,s.started_at,s.completed_at,s.result_schema_version,s.source_post_id,EXISTS(SELECT 1 FROM activity_post p WHERE p.session_id=s.id AND p.deleted_at IS NULL) AS published FROM workout_session s WHERE s.id=? AND s.owner_id=?",id,owner);
     if(found.isEmpty()) throw error(HttpStatus.NOT_FOUND);
     Map<String,Object> row=found.getFirst();
-    try { return Map.of("id",row.get("id"),"clientId",row.get("client_id"),"title",row.get("title"),"workout",json.readTree((String)row.get("payload")),"status",row.get("status"),"startedAt",row.get("started_at").toString(),"published",row.get("published"),"resultSchemaVersion",row.get("result_schema_version")); }
+    try {
+      Map<String,Object> out=new LinkedHashMap<>(Map.of("id",row.get("id"),"clientId",row.get("client_id"),"title",row.get("title"),"workout",json.readTree((String)row.get("payload")),"status",row.get("status"),"startedAt",row.get("started_at").toString(),"published",row.get("published"),"resultSchemaVersion",row.get("result_schema_version")));
+      provenance(out,(UUID)row.get("source_post_id"),owner);
+      return out;
+    }
     catch(Exception ex) { throw new IllegalStateException(ex); }
   }
   @PostMapping("/sessions") @Transactional
@@ -222,6 +228,16 @@ public class GymBroApplication {
   private static final String ACCEPTED="EXISTS (SELECT 1 FROM user_follow f WHERE f.follower_id=? AND f.followed_id=p.author_id AND f.status='ACCEPTED')";
   private static final String DISCOVER=VISIBLE+" AND p.audience='PUBLIC' AND NOT u.is_private";
   private static final String DETAIL=VISIBLE+" AND (p.author_id=? OR ("+ACCEPTED+" AND p.audience IN ('PUBLIC','FOLLOWERS')) OR (NOT u.is_private AND p.audience='PUBLIC'))";
+  // A source ID and identity must never leave the API without a fresh detail permission check.
+  private void provenance(Map<String,Object> out,UUID source,UUID viewer) {
+    if(source==null) return;
+    List<Map<String,Object>> visible=db.queryForList("SELECT p.id,u.handle FROM activity_post p JOIN app_user u ON u.id=p.author_id WHERE "+DETAIL+" AND p.id=?",viewer,viewer,viewer,viewer,source);
+    if(visible.isEmpty()) out.put("sourceUnavailable",true);
+    else {
+      out.put("sourcePostId",visible.getFirst().get("id"));
+      out.put("sourceAuthor",visible.getFirst().get("handle"));
+    }
+  }
   private List<Map<String,Object>> publicExercises(String payload) {
     try {
       JsonNode nodes=json.readTree(payload).path("exercises");
@@ -237,19 +253,88 @@ public class GymBroApplication {
       return result;
     } catch(Exception ex) { throw new IllegalStateException("Invalid stored workout payload",ex); }
   }
-  private Map<String,Object> publicRow(Map<String,Object> row) {
-    return Map.of("id",row.get("id"),"authorId",row.get("author_id"),"author",row.get("handle"),"title",row.get("title"),"sport","STRENGTH","exerciseCount",row.get("exercise_count"),"date",row.get("day").toString(),"exercises",publicExercises((String)row.get("payload")));
+  private Map<String,Object> publicRow(Map<String,Object> row,UUID viewer) {
+    Map<String,Object> out=new LinkedHashMap<>(Map.of("id",row.get("id"),"authorId",row.get("author_id"),"author",row.get("handle"),"title",row.get("title"),"sport","STRENGTH","exerciseCount",row.get("exercise_count"),"date",row.get("day").toString(),"exercises",publicExercises((String)row.get("payload"))));
+    provenance(out,(UUID)row.get("source_post_id"),viewer);
+    return out;
   }
-  private static final String SELECT="SELECT p.id,p.author_id,u.handle,p.title,p.published_at,(p.published_at AT TIME ZONE 'UTC')::date AS day,jsonb_array_length(s.payload->'exercises') AS exercise_count,s.payload::text AS payload FROM activity_post p JOIN app_user u ON u.id=p.author_id JOIN workout_session s ON s.id=p.session_id WHERE ";
+  private static final String SELECT="SELECT p.id,p.author_id,u.handle,p.title,p.published_at,(p.published_at AT TIME ZONE 'UTC')::date AS day,jsonb_array_length(s.payload->'exercises') AS exercise_count,s.payload::text AS payload,s.source_post_id FROM activity_post p JOIN app_user u ON u.id=p.author_id JOIN workout_session s ON s.id=p.session_id WHERE ";
   private Map<String,Object> post(UUID id,UUID actor) {
     List<Map<String,Object>> found=db.queryForList(SELECT+DETAIL+" AND p.id=?",actor,actor,actor,actor,id);
     if(found.isEmpty()) throw error(HttpStatus.NOT_FOUND);
-    return publicRow(found.getFirst());
+    return publicRow(found.getFirst(),actor);
   }
   @GetMapping("/posts/{id}") public Map<String,Object> detail(@PathVariable UUID id,HttpServletRequest request) { return post(id,actor(request)); }
+  private static final String TEMPLATE_SELECT="SELECT id,title,definition::text AS definition,version,source_post_id FROM workout_template WHERE owner_id=?";
+  private Map<String,Object> templateRow(Map<String,Object> row,UUID owner) {
+    try {
+      Map<String,Object> out=new LinkedHashMap<>();
+      out.put("id",row.get("id")); out.put("title",row.get("title"));
+      out.put("exercises",json.readTree((String)row.get("definition")).path("exercises"));
+      out.put("definitionVersion",1); out.put("version",row.get("version"));
+      provenance(out,(UUID)row.get("source_post_id"),owner);
+      return out;
+    } catch(Exception ex) { throw new IllegalStateException("Invalid stored template",ex); }
+  }
+  private Map<String,Object> template(UUID id,UUID owner) {
+    List<Map<String,Object>> rows=db.queryForList(TEMPLATE_SELECT+" AND id=?",owner,id);
+    if(rows.isEmpty()) throw error(HttpStatus.NOT_FOUND);
+    return templateRow(rows.getFirst(),owner);
+  }
+  @GetMapping("/templates") public List<Map<String,Object>> templates(HttpServletRequest request) {
+    UUID owner=actor(request);
+    return db.queryForList(TEMPLATE_SELECT+" ORDER BY created_at DESC,id DESC LIMIT 50",owner).stream().map(row->templateRow(row,owner)).toList();
+  }
+  @GetMapping("/templates/{id}") public Map<String,Object> templateDetail(@PathVariable UUID id,HttpServletRequest request) {
+    return template(id,actor(request));
+  }
+  @PostMapping("/posts/{id}/copy") @Transactional
+  public ResponseEntity<?> copy(@PathVariable UUID id,HttpServletRequest request) {
+    UUID owner=actor(request);
+    // Match /posts/{id} rights before even returning an existing idempotent copy.
+    List<Map<String,Object>> found=db.queryForList(SELECT+DETAIL+" AND p.id=?",owner,owner,owner,owner,id);
+    if(found.isEmpty()) throw error(HttpStatus.NOT_FOUND);
+    Map<String,Object> source=found.getFirst();
+    String title=(String)source.get("title");
+    String definition;
+    try { definition=json.writeValueAsString(Map.of("title",title,"exercises",publicExercises((String)source.get("payload")))); }
+    catch(Exception ex) { throw new IllegalStateException(ex); }
+    UUID templateId=UUID.randomUUID();
+    int inserted=db.update("INSERT INTO workout_template(id,owner_id,source_post_id,title,definition) VALUES(?,?,?,?,?::jsonb) ON CONFLICT(owner_id,source_post_id) DO NOTHING",templateId,owner,id,title,definition);
+    if(inserted==0) templateId=db.queryForObject("SELECT id FROM workout_template WHERE owner_id=? AND source_post_id=?",UUID.class,owner,id);
+    return ResponseEntity.status(inserted==1?HttpStatus.CREATED:HttpStatus.OK).body(template(templateId,owner));
+  }
+  @PutMapping("/templates/{id}") public Map<String,Object> editTemplate(@PathVariable UUID id,@RequestBody TemplateDefinition in,HttpServletRequest request) {
+    UUID owner=actor(request);
+    // Do not reveal validation errors for someone else's template.
+    template(id,owner);
+    if(in==null) throw error(HttpStatus.BAD_REQUEST);
+    validate(new Workout(UUID.randomUUID(),in.title(),in.exercises()));
+    String payload;
+    try { payload=json.writeValueAsString(in); } catch(Exception ex) { throw error(HttpStatus.BAD_REQUEST); }
+    db.update("UPDATE workout_template SET title=?,definition=?::jsonb,version=version+1 WHERE id=? AND owner_id=?",in.title().strip(),payload,id,owner);
+    return template(id,owner);
+  }
+  @PostMapping("/templates/{id}/sessions") @Transactional
+  public ResponseEntity<?> startTemplate(@PathVariable UUID id,@RequestBody StartTemplate in,HttpServletRequest request) {
+    UUID owner=actor(request);
+    List<Map<String,Object>> rows=db.queryForList(TEMPLATE_SELECT+" AND id=?",owner,id);
+    if(rows.isEmpty()) throw error(HttpStatus.NOT_FOUND);
+    if(in==null || in.clientId()==null) throw error(HttpStatus.BAD_REQUEST);
+    Map<String,Object> source=rows.getFirst();
+    TemplateDefinition definition;
+    try { definition=json.readValue((String)source.get("definition"),TemplateDefinition.class); }
+    catch(Exception ex) { throw new IllegalStateException("Invalid stored template",ex); }
+    Workout workout=new Workout(in.clientId(),definition.title(),definition.exercises());
+    validate(workout);
+    UUID sessionId=UUID.randomUUID();
+    int inserted=db.update("INSERT INTO workout_session(id,owner_id,client_id,title,payload,source_post_id) VALUES(?,?,?,?,?::jsonb,?) ON CONFLICT(owner_id,client_id) DO NOTHING",sessionId,owner,in.clientId(),workout.title(),encode(workout),source.get("source_post_id"));
+    if(inserted==0) sessionId=db.queryForObject("SELECT id FROM workout_session WHERE owner_id=? AND client_id=?",UUID.class,owner,in.clientId());
+    return ResponseEntity.status(inserted==1?HttpStatus.CREATED:HttpStatus.OK).body(session(sessionId,owner));
+  }
   @GetMapping("/feed") public List<Map<String,Object>> feed(HttpServletRequest request,@RequestParam(defaultValue="0") int offset) {
     UUID user=actor(request); if(offset<0 || offset>1000) throw error(HttpStatus.BAD_REQUEST);
-    return db.queryForList(SELECT+DISCOVER+" ORDER BY p.published_at DESC,p.id DESC LIMIT 20 OFFSET ?",user,user,offset).stream().map(this::publicRow).toList();
+    return db.queryForList(SELECT+DISCOVER+" ORDER BY p.published_at DESC,p.id DESC LIMIT 20 OFFSET ?",user,user,offset).stream().map(row->publicRow(row,user)).toList();
   }
   private Object[] cursor(String value) {
     if(value==null) return null;
@@ -260,7 +345,7 @@ public class GymBroApplication {
       return new Object[]{Timestamp.from(Instant.parse(parts[0])),UUID.fromString(parts[1])};
     } catch(IllegalArgumentException ex) { throw error(HttpStatus.BAD_REQUEST); }
   }
-  private Map<String,Object> page(String filter,List<Object> params,int limit,String after) {
+  private Map<String,Object> page(String filter,List<Object> params,int limit,String after,UUID viewer) {
     if(limit<1 || limit>20) throw error(HttpStatus.BAD_REQUEST);
     Object[] cursor=cursor(after);
     String sql=SELECT+filter+(cursor==null?"":" AND (p.published_at,p.id)<(?,?)")+" ORDER BY p.published_at DESC,p.id DESC LIMIT ?";
@@ -270,14 +355,14 @@ public class GymBroApplication {
     boolean more=rows.size()>limit;
     List<Map<String,Object>> items=rows.subList(0,Math.min(rows.size(),limit));
     Map<String,Object> result=new LinkedHashMap<>();
-    result.put("items",items.stream().map(this::publicRow).toList());
+    result.put("items",items.stream().map(row->publicRow(row,viewer)).toList());
     Map<String,Object> last=items.isEmpty()?null:items.getLast();
     result.put("nextCursor",more && last!=null?Base64.getUrlEncoder().withoutPadding().encodeToString(( ((Timestamp)last.get("published_at")).toInstant()+"|"+last.get("id")).getBytes(StandardCharsets.UTF_8)):null);
     return result;
   }
   @GetMapping("/feed/following") public Map<String,Object> following(HttpServletRequest request,@RequestParam(defaultValue="20") int limit,@RequestParam(required=false) String cursor) {
     UUID user=actor(request);
-    return page(VISIBLE+" AND "+ACCEPTED+" AND p.audience IN ('PUBLIC','FOLLOWERS')",new ArrayList<>(List.of(user,user,user)),limit,cursor);
+    return page(VISIBLE+" AND "+ACCEPTED+" AND p.audience IN ('PUBLIC','FOLLOWERS')",new ArrayList<>(List.of(user,user,user)),limit,cursor,user);
   }
   @GetMapping("/users/{id}/posts") public Map<String,Object> profilePosts(@PathVariable UUID id,HttpServletRequest request,@RequestParam(defaultValue="20") int limit,@RequestParam(required=false) String cursor) {
     UUID user=actor(request);
@@ -285,7 +370,7 @@ public class GymBroApplication {
     profile(id,request);
     if(!id.equals(user) && db.queryForObject("SELECT count(*) FROM app_user WHERE id=? AND is_private",Integer.class,id)>0 &&
       db.queryForObject("SELECT count(*) FROM user_follow WHERE follower_id=? AND followed_id=? AND status='ACCEPTED'",Integer.class,user,id)==0) throw error(HttpStatus.NOT_FOUND);
-    return page(DETAIL+" AND p.author_id=?",new ArrayList<>(List.of(user,user,user,user,id)),limit,cursor);
+    return page(DETAIL+" AND p.author_id=?",new ArrayList<>(List.of(user,user,user,user,id)),limit,cursor,user);
   }
   @PostMapping("/users/{id}/block") public ResponseEntity<?> block(@PathVariable UUID id,HttpServletRequest request) {
     UUID actor=actor(request); if(id.equals(actor)) throw error(HttpStatus.BAD_REQUEST);

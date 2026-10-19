@@ -40,3 +40,16 @@ Règle de visibilité : `docs/decisions/ADR-003-private-accounts-follow-feed.md`
 | POST | `/sessions/{id}/posts` | `{audience:"PUBLIC"|"FOLLOWERS"}` facultatif pour clients précédents (défaut PUBLIC) ; premier post immuable, même post au retry |
 
 Curseur base64url `(instant UTC|UUID)` opaque, max 150 caractères ; limite 1–20, erreur 400 si invalide. Le fil Découvrir `/feed?offset` reste réservé aux comptes publics et posts PUBLIC. Le détail applique le même contrat, y compris après changement de privacité/blocage. Aucune lecture de session privée complète pour un tiers. La passerelle HTTPS de test conserve une allowlist exacte de ces seules routes et paramètres ; aucun endpoint admin.
+
+## Tranche C — modèles personnels et copie (V5 additive)
+
+Voir `docs/decisions/ADR-004-copy-templates-provenance.md`. Tous les chemins exigent le bearer ; les modèles et leurs éditions/démarrages sont limités au propriétaire. Les inconnus et tiers reçoivent 404. Aucun endpoint de liste de modèles d'autrui.
+
+| Méthode | Chemin | Résultat |
+|---|---|---|
+| POST | `/posts/{id}/copy` | 201 `{id,title,exercises,definitionVersion:1,version:1,sourcePostId,sourceAuthor}` si le post est lisible au moment de l'action ; retry 200 même modèle propriétaire, revérifie le droit avant réponse |
+| GET | `/templates`, `/templates/{id}` | Jusqu'à 50 modèles personnels / détail ; `exercises` est le snapshot de cibles, jamais les résultats du compte source |
+| PUT | `/templates/{id}` | `{title,exercises:[{name,sets:[{reps,weight,unit}]}]}` ; même validation que séance, incrémente `version` ; original et autres modèles inchangés |
+| POST | `/templates/{id}/sessions` | `{clientId:UUID}` ; 201 brouillon personnel indépendant contenant le snapshot, retry 200 même séance via clientId |
+
+`/sessions/{id}` du propriétaire et les projections post/fil du copieur portent `sourcePostId` et `sourceAuthor` uniquement si le lecteur est actuellement autorisé à lire la source. Sinon `sourceUnavailable:true` sans identité, titre ou ID source ; la copie acquise conserve ses propres cibles après révocation. La session est privée par défaut, `complete` et `posts` existants restent séparés. Aucun changement de politique de comptes ni d'audience. La version est celle de la définition courante ; l'historique des anciennes éditions et les templates créés de zéro sont reportés, pas d'affirmation CRUD complet/version history dans cette tranche.

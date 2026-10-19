@@ -5,25 +5,47 @@ import 'main.dart';
 // Aperçu local des VRAIS widgets, avec données fictives explicitement signalées.
 // Entrypoint séparé : jamais utilisé par l'APK de test ni l'application standard.
 class PreviewApi extends Api {
-  Map? workout;
-  bool published = false, following = false;
+  Map? workout, template;
+  bool published = false, following = false, completed = false;
   @override Future<dynamic> call(String method, String path, [Object? body]) async {
-    if (path == '/feed') { return published ? [
-      {'id': 'demo-post', 'title': workout?['title'] ?? 'Force du lundi', 'author': 'demo_athlete',
-       'sport': 'STRENGTH', 'date': '2026-10-19', 'exerciseCount': (workout?['exercises'] as List?)?.length ?? 1,
+    if (path == '/feed') { return [
+      if (published) {'id': 'demo-post', 'title': workout?['title'] ?? 'Force du lundi', 'author': 'demo_athlete',
+        'sport': 'STRENGTH', 'date': '2026-10-19', 'exerciseCount': (workout?['exercises'] as List?)?.length ?? 1,
+       if (template != null) 'sourceAuthor':'bravo_demo',
        'exercises': workout?['exercises'] ?? [{'name': 'Squat', 'sets': [{'reps': 5, 'weight': 80, 'unit': 'kg'}]}]},
-    ] : []; }
+      {'id':'demo-source','authorId':'demo-bravo','author':'bravo_demo','title':'Squat du matin · démo à copier',
+       'sport':'STRENGTH','date':'2026-10-19','exerciseCount':1,
+       'exercises':[{'name':'Squat','sets':[{'reps':5,'weight':80,'unit':'kg'}]}]},
+    ]; }
     if (path == '/sessions' && method == 'GET') { return workout == null ? [] : [
-      {'id': 'demo-session', 'title': workout!['title'], 'status': 'COMPLETED', 'started_at': '2026-10-19'}]; }
-    if (path == '/sessions' && method == 'POST') { workout = body as Map; return {'id': 'demo-session', 'status': 'DRAFT'}; }
+      {'id': 'demo-session', 'title': workout!['title'], 'status': completed ? 'COMPLETED' : 'DRAFT', 'started_at': '2026-10-19'}]; }
+    if (path == '/sessions' && method == 'POST') { if (!completed) workout = body as Map; return {'id': 'demo-session', 'status': completed ? 'COMPLETED' : 'DRAFT'}; }
     if (path == '/sessions/demo-session' && method == 'PUT') { workout = body as Map; return {}; }
     if (path == '/sessions/demo-session/complete' || path == '/sessions/demo-session') {
-      return {'id': 'demo-session', 'title': workout?['title'] ?? 'Force du lundi', 'status': 'COMPLETED',
+      if (path.endsWith('/complete')) completed = true;
+      return {'id': 'demo-session', 'title': workout?['title'] ?? 'Force du lundi', 'status': completed ? 'COMPLETED' : 'DRAFT',
         'workout': workout, 'published': published};
     }
     if (path == '/sessions/demo-session/posts') { published = true; return {'id': 'demo-post'}; }
     if (path == '/posts/demo-post') return (await call('GET', '/feed') as List).first;
-    if (path == '/me/summary') return {'handle': 'demo_athlete', 'sessions': workout == null ? 0 : 1, 'publications': published ? 1 : 0};
+    if (path == '/posts/demo-source') return (await call('GET', '/feed') as List).last;
+    if (path == '/templates') return template == null ? <dynamic>[] : [template];
+    if (path == '/posts/demo-source/copy') {
+      template ??= {'id':'demo-template','title':'Squat du matin · démo à copier',
+        'exercises':[{'name':'Squat','sets':[{'reps':5,'weight':80,'unit':'kg'}]}],
+        'sourcePostId':'demo-source','sourceAuthor':'bravo_demo','version':1};
+      return template;
+    }
+    if (path == '/templates/demo-template' && method == 'PUT') {
+      template = {'id':'demo-template',...body as Map,'sourcePostId':'demo-source','sourceAuthor':'bravo_demo','version':2};
+      return template;
+    }
+    if (path == '/templates/demo-template/sessions') {
+      workout = {'clientId':(body as Map)['clientId'],'title':template!['title'],'exercises':template!['exercises']};
+      return {'id':'demo-session','clientId':workout!['clientId'],'title':workout!['title'],
+        'status':'DRAFT','workout':workout,'sourcePostId':'demo-source','sourceAuthor':'bravo_demo'};
+    }
+    if (path == '/me/summary') return {'handle': 'demo_athlete', 'sessions': completed ? 1 : 0, 'publications': published ? 1 : 0};
     if (path == '/me') return {'id':'preview-fixture','handle':'demo_athlete','private':false,'unit':'kg'};
     if (path == '/me/follow-requests') return <dynamic>[];
     if (path == '/feed/following') { return {'items': following ? [
