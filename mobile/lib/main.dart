@@ -62,6 +62,12 @@ class ApiUnauthorized implements Exception {
   @override String toString() => 'Session expirée. Reconnectez-vous.';
 }
 
+class ApiHttpFailure implements Exception {
+  final int status;
+  const ApiHttpFailure(this.status);
+  @override String toString() => 'Opération refusée. Réessayez.';
+}
+
 class DraftStore {
   final SharedPreferences prefs;
   DraftStore(this.prefs);
@@ -104,7 +110,7 @@ class Api {
     }
     if (response.statusCode == 401) throw ApiUnauthorized();
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('HTTP ${response.statusCode}: opération refusée');
+      throw ApiHttpFailure(response.statusCode);
     }
     return response.body.isEmpty ? null : jsonDecode(response.body);
   }
@@ -212,14 +218,45 @@ class _AuthScreenState extends State<AuthScreen> {
   final handle = TextEditingController(), email = TextEditingController(), password = TextEditingController();
   bool register = false, busy = false;
   String? error;
+  String? handleError, emailError, passwordError;
+  bool validated = false;
+
+  void validateFields() {
+    final name = handle.text.trim(), address = email.text.trim();
+    handleError = register ? (name.isEmpty ? 'Pseudo requis.'
+        : RegExp(r'^[a-z0-9_]{3,32}$').hasMatch(name) ? null
+        : 'Pseudo : 3 à 32 lettres minuscules, chiffres ou _.') : null;
+    emailError = address.isEmpty ? 'Email requis.'
+        : address.length > 254 || !RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(address)
+            ? 'Saisissez une adresse email valide.' : null;
+    passwordError = password.text.isEmpty ? 'Mot de passe requis.'
+        : (register && password.text.length < 12) || password.text.length > 128
+            ? 'Mot de passe : 12 à 128 caractères.' : null;
+  }
+
+  String authError(Object failure) {
+    if (failure is ApiUnauthorized) return 'Identifiants incorrects.';
+    if (failure is ApiHttpFailure) {
+      if (register && failure.status == 409) {
+        return 'Inscription impossible avec ces informations. Essayez un autre pseudo ou email.';
+      }
+      if (register && failure.status == 400) return 'Inscription refusée. Vérifiez les champs et réessayez.';
+      return 'Opération indisponible. Vérifiez les champs puis réessayez.';
+    }
+    return 'Réseau ou service indisponible. Vérifiez votre connexion puis réessayez.';
+  }
+
   Future<void> submit() async {
+    if (busy) return;
+    setState(() { validated = true; error = null; validateFields(); });
+    if (handleError != null || emailError != null || passwordError != null) return;
     setState(() { busy = true; error = null; });
     try {
       final data = await widget.api.call('POST', register ? '/auth/register' : '/auth/login', {
         if (register) 'handle': handle.text.trim(), 'email': email.text.trim(), 'password': password.text,
       });
       await widget.onSuccess(Map<String, dynamic>.from(data as Map));
-    } catch (e) { if (mounted) setState(() => error = '$e'); }
+    } catch (e) { if (mounted) setState(() => error = authError(e)); }
     finally { if (mounted) setState(() => busy = false); }
   }
   @override void dispose() { handle.dispose(); email.dispose(); password.dispose(); super.dispose(); }
@@ -228,13 +265,22 @@ class _AuthScreenState extends State<AuthScreen> {
     body: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 440), child: ListView(padding: const EdgeInsets.all(24), children: [
       const Text('Gym Bro', style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
       const SizedBox(height: 24),
-      if (register) TextField(key: const Key('handle'), controller: handle, decoration: const InputDecoration(labelText: 'Pseudo')),
-      TextField(controller: email, decoration: const InputDecoration(labelText: 'Email'), keyboardType: TextInputType.emailAddress),
-      TextField(controller: password, obscureText: true, decoration: const InputDecoration(labelText: 'Mot de passe (12 caractères minimum)')),
+      if (register) TextField(key: const Key('handle'), controller: handle,
+        onChanged: (_) { if (validated) setState(validateFields); },
+        decoration: InputDecoration(labelText: 'Pseudo', errorText: handleError)),
+      TextField(key: const Key('email'), controller: email,
+        onChanged: (_) { if (validated) setState(validateFields); },
+        decoration: InputDecoration(labelText: 'Email', errorText: emailError), keyboardType: TextInputType.emailAddress),
+      TextField(key: const Key('password'), controller: password, obscureText: true,
+        onChanged: (_) { if (validated) setState(validateFields); },
+        decoration: InputDecoration(labelText: 'Mot de passe (12 caractères minimum)', errorText: passwordError)),
       if (error != null) Text(error!, style: const TextStyle(color: Colors.red)),
       const SizedBox(height: 24),
       FilledButton(onPressed: busy ? null : submit, child: Text(register ? 'Créer mon compte' : 'Connexion')),
-      TextButton(onPressed: () => setState(() => register = !register), child: Text(register ? 'Déjà inscrit ? Connexion' : 'Créer un compte')),
+      TextButton(onPressed: busy ? null : () => setState(() {
+        register = !register; error = null; validated = false;
+        handleError = emailError = passwordError = null;
+      }), child: Text(register ? 'Déjà inscrit ? Connexion' : 'Créer un compte')),
     ]))),
   );
 }
