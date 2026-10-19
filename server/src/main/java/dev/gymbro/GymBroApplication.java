@@ -42,6 +42,9 @@ public class GymBroApplication {
   record Workout(UUID clientId, String title, List<Exercise> exercises) {}
   record WodResult(Integer rounds, Integer reps, Integer timeSeconds, Boolean scaled) {}
   record Wod(UUID clientId, String title, String format, Integer timeCapSeconds, List<String> movements, WodResult result) {}
+  record HyroxSegment(String type, String name, Integer distanceMeters, Integer durationSeconds,
+                      Integer reps, BigDecimal weight, String unit) {}
+  record Hyrox(UUID clientId, String title, List<HyroxSegment> segments, Integer totalSeconds, String notes) {}
   record Report(String reason) {}
   record ProfileUpdate(String displayName, @JsonProperty("private") Boolean privateAccount, String unit) {}
   record Publication(String audience) {}
@@ -213,6 +216,54 @@ public class GymBroApplication {
     if(db.update("UPDATE workout_session SET title=?,payload=?::jsonb WHERE id=? AND owner_id=? AND client_id=? AND result_schema_version=2 AND status='DRAFT'",in.title().strip(),payload,id,owner,in.clientId())==0) throw error(HttpStatus.NOT_FOUND);
     return session(id,owner);
   }
+  private void validateHyrox(Hyrox in) {
+    if(in==null || in.clientId()==null || in.title()==null || in.title().isBlank() || in.title().length()>100 ||
+      in.totalSeconds()==null || in.totalSeconds()<1 || in.totalSeconds()>86400 ||
+      in.notes()!=null && in.notes().length()>1000 || in.segments()==null ||
+      in.segments().size()<2 || in.segments().size()>20) throw error(HttpStatus.BAD_REQUEST);
+    int sum=0; boolean run=false, station=false;
+    for(HyroxSegment segment:in.segments()) {
+      if(segment==null || segment.durationSeconds()==null || segment.durationSeconds()<1 || segment.durationSeconds()>86400)
+        throw error(HttpStatus.BAD_REQUEST);
+      sum+=segment.durationSeconds();
+      if("RUN".equals(segment.type())) {
+        run=true;
+        if(segment.distanceMeters()==null || segment.distanceMeters()<1 || segment.distanceMeters()>50000 ||
+          segment.name()!=null || segment.reps()!=null || segment.weight()!=null || segment.unit()!=null) throw error(HttpStatus.BAD_REQUEST);
+      } else if("STATION".equals(segment.type())) {
+        station=true;
+        if(segment.name()==null || segment.name().isBlank() || segment.name().length()>80 || segment.distanceMeters()!=null ||
+          segment.reps()!=null && (segment.reps()<1 || segment.reps()>10000) ||
+          segment.weight()!=null && (segment.weight().signum()<0 || segment.weight().scale()>2 || segment.weight().compareTo(new BigDecimal("10000"))>0) ||
+          (segment.weight()==null) != (segment.unit()==null) ||
+          segment.unit()!=null && !List.of("kg","lb").contains(segment.unit())) throw error(HttpStatus.BAD_REQUEST);
+      } else throw error(HttpStatus.BAD_REQUEST);
+    }
+    if(!run || !station || sum>in.totalSeconds()) throw error(HttpStatus.BAD_REQUEST);
+  }
+  @PostMapping("/hyrox") @Transactional
+  public ResponseEntity<?> createHyrox(@RequestBody Hyrox in,HttpServletRequest request) {
+    UUID owner=actor(request); validateHyrox(in);
+    UUID id=UUID.randomUUID();
+    int inserted=db.update("INSERT INTO workout_session(id,owner_id,client_id,title,payload,result_schema_version) VALUES(?,?,?,?,?::jsonb,3) ON CONFLICT(owner_id,client_id) DO NOTHING",
+      id,owner,in.clientId(),in.title().strip(),encodeHyrox(in));
+    if(inserted==0) {
+      List<UUID> existing=db.query("SELECT id FROM workout_session WHERE owner_id=? AND client_id=? AND result_schema_version=3",(r,n)->(UUID)r.getObject(1),owner,in.clientId());
+      if(existing.isEmpty()) throw error(HttpStatus.CONFLICT);
+      id=existing.getFirst();
+    }
+    return ResponseEntity.status(inserted==1?HttpStatus.CREATED:HttpStatus.OK).body(session(id,owner));
+  }
+  private String encodeHyrox(Hyrox in) {
+    try { return json.writeValueAsString(in); } catch(Exception ex) { throw error(HttpStatus.BAD_REQUEST); }
+  }
+  @PutMapping("/hyrox/{id}")
+  public Map<String,Object> updateHyrox(@PathVariable UUID id,@RequestBody Hyrox in,HttpServletRequest request) {
+    UUID owner=actor(request); validateHyrox(in);
+    if(db.update("UPDATE workout_session SET title=?,payload=?::jsonb WHERE id=? AND owner_id=? AND client_id=? AND result_schema_version=3 AND status='DRAFT'",
+      in.title().strip(),encodeHyrox(in),id,owner,in.clientId())==0) throw error(HttpStatus.NOT_FOUND);
+    return session(id,owner);
+  }
   private Map<String,Object> session(UUID id, UUID owner) {
     List<Map<String,Object>> found=db.queryForList("SELECT s.id,s.client_id,s.title,s.payload::text AS payload,s.status,s.started_at,s.completed_at,s.result_schema_version,s.source_post_id,EXISTS(SELECT 1 FROM activity_post p WHERE p.session_id=s.id AND p.deleted_at IS NULL) AS published FROM workout_session s WHERE s.id=? AND s.owner_id=?",id,owner);
     if(found.isEmpty()) throw error(HttpStatus.NOT_FOUND);
@@ -295,9 +346,22 @@ public class GymBroApplication {
     } catch(Exception ex) { throw new IllegalStateException("Invalid stored workout payload",ex); }
   }
   private Map<String,Object> publicRow(Map<String,Object> row,UUID viewer) {
-    boolean wod=((Number)row.get("result_schema_version")).intValue()==2;
-    Map<String,Object> out=new LinkedHashMap<>(Map.of("id",row.get("id"),"authorId",row.get("author_id"),"author",row.get("handle"),"title",row.get("title"),"sport",wod?"CROSSFIT":"STRENGTH","date",row.get("day").toString()));
-    if(wod) {
+    int version=((Number)row.get("result_schema_version")).intValue();
+    Map<String,Object> out=new LinkedHashMap<>(Map.of("id",row.get("id"),"authorId",row.get("author_id"),"author",row.get("handle"),"title",row.get("title"),"sport",version==3?"HYROX":version==2?"CROSSFIT":"STRENGTH","date",row.get("day").toString()));
+    if(version==3) {
+      try {
+        JsonNode payload=json.readTree((String)row.get("payload"));
+        out.put("totalSeconds",payload.path("totalSeconds").asInt());
+        List<Map<String,Object>> segments=new ArrayList<>();
+        for(JsonNode item:payload.path("segments")) {
+          Map<String,Object> projected=new LinkedHashMap<>();
+          for(String key:List.of("type","name","distanceMeters","durationSeconds","reps","weight","unit"))
+            if(item.hasNonNull(key)) projected.put(key,json.convertValue(item.get(key),Object.class));
+          segments.add(projected);
+        }
+        out.put("segments",segments);
+      } catch(Exception ex) { throw new IllegalStateException("Invalid stored Hyrox",ex); }
+    } else if(version==2) {
       try {
         JsonNode payload=json.readTree((String)row.get("payload"));
         out.put("format",payload.path("format").asText());

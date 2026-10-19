@@ -11,6 +11,7 @@ import 'native_diagnostic_io.dart'
     if (dart.library.js_interop) 'native_diagnostic_web.dart' as native;
 import 'template_screen.dart';
 import 'wod_screen.dart';
+import 'hyrox_screen.dart';
 
 const apiBase = String.fromEnvironment('API_BASE', defaultValue: 'http://127.0.0.1:18081/api/v1');
 const diagnosticBuild = String.fromEnvironment('DIAGNOSTIC_BUILD', defaultValue: 'unknown');
@@ -31,7 +32,7 @@ ThemeData gymTheme() => ThemeData(
   outlinedButtonTheme: OutlinedButtonThemeData(style: OutlinedButton.styleFrom(minimumSize: const Size(48, 52))),
 );
 
-String sportLabel(Object? sport) => sport == 'STRENGTH' ? 'Musculation' : sport == 'CROSSFIT' ? 'CrossFit' : 'Séance';
+String sportLabel(Object? sport) => sport == 'STRENGTH' ? 'Musculation' : sport == 'CROSSFIT' ? 'CrossFit' : sport == 'HYROX' ? 'Hyrox' : 'Séance';
 bool isTechnicalPost(Map post) {
   final title = '${post['title']}', author = '${post['author']}';
   return (RegExp(r'^Public smoke [0-9a-f]{8}$').hasMatch(title) &&
@@ -45,6 +46,15 @@ String dateLabel(Object? value) {
   return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
 }
 String exerciseSummary(Map post) {
+  if (post['sport'] == 'HYROX') {
+    final segments = post['segments'] as List? ?? [];
+    final labels = segments.map((entry) {
+      final segment = entry as Map;
+      return segment['type'] == 'RUN' ? 'Course ${segment['distanceMeters']} m · ${segment['durationSeconds']} s'
+        : '${segment['name']} · ${segment['durationSeconds']} s${segment['reps'] == null ? '' : ' · ${segment['reps']} reps'}${segment['weight'] == null ? '' : ' · ${segment['weight']} ${segment['unit']}'}';
+    }).join('  •  ');
+    return 'Temps total ${post['totalSeconds']} s · $labels';
+  }
   if (post['sport'] == 'CROSSFIT') {
     final result = post['result'] as Map? ?? {};
     final score = post['format'] == 'FOR_TIME' ? '${result['timeSeconds']} s'
@@ -143,6 +153,16 @@ class DraftStore {
   }
   Future<void> clearWod(String user) async {
     if (!await prefs.remove('wod:$user')) throw StateError('WOD draft not cleared');
+  }
+  Map<String, dynamic>? readHyrox(String user) {
+    final value = prefs.getString('hyrox:$user');
+    return value == null ? null : jsonDecode(value) as Map<String, dynamic>;
+  }
+  Future<void> saveHyrox(String user, Map<String,dynamic> data) async {
+    if (!await prefs.setString('hyrox:$user', jsonEncode(data))) throw StateError('Hyrox draft not saved');
+  }
+  Future<void> clearHyrox(String user) async {
+    if (!await prefs.remove('hyrox:$user')) throw StateError('Hyrox draft not cleared');
   }
 }
 
@@ -478,6 +498,10 @@ class _HomeScreenState extends State<HomeScreen> {
     await Navigator.push(context, MaterialPageRoute(builder: (_) => WodScreen(api: widget.api, store: widget.store, userId: widget.userId)));
     if (mounted) refresh();
   }
+  Future<void> trainHyrox() async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => HyroxScreen(api: widget.api, store: widget.store, userId: widget.userId)));
+    if (mounted) refresh();
+  }
   Future<void> searchAthlete() async {
     await Navigator.push(context, MaterialPageRoute(builder: (_) => AthleteSearchScreen(api: widget.api, userId: widget.userId)));
     if (mounted) refresh();
@@ -515,6 +539,20 @@ class _HomeScreenState extends State<HomeScreen> {
       final item = await widget.api.call('GET', '/sessions/${session['id']}') as Map;
       if (!mounted) return;
       if (item['status'] == 'DRAFT') {
+        if (item['resultSchemaVersion'] == 3) {
+          final local = widget.store.readHyrox(widget.userId);
+          if (local != null && local['clientId'] != item['clientId']) {
+            setState(() => error = 'Une autre séance Hyrox est déjà en brouillon sur cet appareil. Terminez-la avant de reprendre celle-ci.');
+            return;
+          }
+          final workout = item['workout'] as Map;
+          await widget.store.saveHyrox(widget.userId, {
+            'clientId': item['clientId'], 'title': item['title'], 'totalSeconds': workout['totalSeconds'],
+            'segments': workout['segments'], 'notes': workout['notes'],
+          });
+          await trainHyrox();
+          return;
+        }
         if (item['resultSchemaVersion'] == 2) {
           final localWod = widget.store.readWod(widget.userId);
           if (localWod != null && localWod['clientId'] != item['clientId']) {
@@ -583,6 +621,8 @@ class _HomeScreenState extends State<HomeScreen> {
     Text('Mes séances', style: Theme.of(context).textTheme.headlineLarge),
     const SizedBox(height: 12), FilledButton.icon(onPressed: trainWod, icon: const Icon(Icons.timer_outlined),
       label: Text(widget.store.readWod(widget.userId) == null ? 'Créer un WOD CrossFit' : 'Reprendre mon WOD')),
+    const SizedBox(height: 8), OutlinedButton.icon(onPressed: trainHyrox, icon: const Icon(Icons.route_outlined),
+      label: Text(widget.store.readHyrox(widget.userId) == null ? 'Créer une séance Hyrox' : 'Reprendre ma séance Hyrox')),
     const SizedBox(height: 8), const Text('Tes modèles restent personnels. Adapte-les avant de démarrer une nouvelle séance.'),
     const SizedBox(height: 12), Text('Mes modèles', style: Theme.of(context).textTheme.titleLarge),
     if (templates.isEmpty) gymCard(child: const Text('Aucun modèle. Ouvre une séance visible du fil et choisis « Copier et essayer ».')),
@@ -600,6 +640,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (widget.store.readWod(widget.userId) != null) gymCard(child: ListTile(
       leading: const Icon(Icons.timer_outlined), title: const Text('Brouillon WOD sur cet appareil'),
       subtitle: const Text('Privé · reprends tes mouvements et ton score'), onTap: trainWod)),
+    if (widget.store.readHyrox(widget.userId) != null) gymCard(child: ListTile(
+      leading: const Icon(Icons.route_outlined), title: const Text('Brouillon Hyrox sur cet appareil'),
+      subtitle: const Text('Privé · reprends tes courses et tes stations'), onTap: trainHyrox)),
     if (history.isEmpty && !busy) gymCard(child: const Text('Aucune séance enregistrée sur ton compte. Commence par ton premier entraînement.')),
     for (final entry in history) gymCard(child: ListTile(
       title: Text('${entry['title']}'),
@@ -905,7 +948,7 @@ class _CompletedScreenState extends State<CompletedScreen> {
   Future<void> publish(String audience) async {
     final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
       title: const Text('Partager cette séance ?'),
-      content: Text('Son titre, ${widget.session['resultSchemaVersion'] == 2 ? 'son format, ses mouvements et ton résultat' : 'tes exercices, séries, répétitions et charges'} seront visibles ${audience == 'PUBLIC' ? 'publiquement (sauf si ton compte est privé)' : 'uniquement par tes abonnés acceptés'}. Pas ton email ni l’heure précise.'),
+      content: Text('Son titre, ${widget.session['resultSchemaVersion'] == 3 ? 'les courses, stations, distances, durées, charges et ton temps total (jamais tes notes privées)' : widget.session['resultSchemaVersion'] == 2 ? 'son format, ses mouvements et ton résultat' : 'tes exercices, séries, répétitions et charges'} seront visibles ${audience == 'PUBLIC' ? 'publiquement (sauf si ton compte est privé)' : 'uniquement par tes abonnés acceptés'}. Pas ton email ni l’heure précise.'),
       actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Rester privé')),
         FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Confirmer la publication'))],
     ));
@@ -925,6 +968,11 @@ class _CompletedScreenState extends State<CompletedScreen> {
         Text('${widget.session['workout']['format']} · ${widget.session['workout']['timeCapSeconds']} s de time cap', style: Theme.of(context).textTheme.titleLarge),
         Text((widget.session['workout']['movements'] as List).join(' · ')),
         Text(exerciseSummary({...widget.session['workout'], 'sport': 'CROSSFIT'})),
+      ])),
+      if (widget.session['resultSchemaVersion'] == 3) gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Hyrox · ${widget.session['workout']['totalSeconds']} s', style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 8), Text(exerciseSummary({...widget.session['workout'], 'sport': 'HYROX'})),
+        if ('${widget.session['workout']['notes'] ?? ''}'.isNotEmpty) const Text('Tes notes restent privées.'),
       ])),
       for (final exercise in (widget.session['workout']?['exercises'] as List? ?? [])) ...[
         const SizedBox(height: 12), gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

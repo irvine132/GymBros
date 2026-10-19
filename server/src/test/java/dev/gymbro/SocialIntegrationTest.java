@@ -192,4 +192,50 @@ class SocialIntegrationTest {
     emom.put("clientId",UUID.randomUUID().toString()); emom.put("format","EMOM");
     assertThat(ok(HttpMethod.POST,"/wods",emom,author.token(),HttpStatus.CREATED).toString()).contains("EMOM");
   }
+  @Test void hyroxSegmentsStayPrivateUntilPublishedAndNeverExposeNotes() {
+    User athlete=user("hyroxowner"), viewer=user("hyroxviewer");
+    String client=UUID.randomUUID().toString();
+    var run=Map.of("type","RUN","distanceMeters",1000,"durationSeconds",330);
+    var station=Map.of("type","STATION","name","SkiErg","durationSeconds",240,"reps",50,"weight",20,"unit","kg");
+    var input=Map.of("clientId",client,"title","Mon Hyrox","totalSeconds",640,
+      "segments",List.of(run,station),"notes","Note strictement privée");
+    var invalid=new java.util.HashMap<String,Object>(input);
+    invalid.put("totalSeconds",100);
+    assertThat(call(HttpMethod.POST,"/hyrox",invalid,athlete.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    invalid.put("totalSeconds",640);
+    invalid.put("segments",List.of(Map.of("type","RUN","distanceMeters",-1,"durationSeconds",330),station));
+    assertThat(call(HttpMethod.POST,"/hyrox",invalid,athlete.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    invalid.put("segments",List.of(run,Map.of("type","STATION","name","SkiErg","durationSeconds",240,"weight",20,"unit","stone")));
+    assertThat(call(HttpMethod.POST,"/hyrox",invalid,athlete.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    var created=ok(HttpMethod.POST,"/hyrox",input,athlete.token(),HttpStatus.CREATED);
+    String id=created.get("id").toString();
+    assertThat(created.toString()).contains("resultSchemaVersion=3","SkiErg","Note strictement privée");
+    assertThat(ok(HttpMethod.POST,"/hyrox",input,athlete.token(),HttpStatus.OK).get("id")).isEqualTo(id);
+    assertThat(call(HttpMethod.POST,"/wods",Map.of("clientId",client,"title","Cross sport","format","AMRAP",
+      "timeCapSeconds",720,"movements",List.of("Burpees"),"result",Map.of("rounds",3,"reps",2,"scaled",false)),athlete.token()).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+    assertThat(call(HttpMethod.GET,"/sessions/"+id,null,viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    var changed=new java.util.HashMap<String,Object>(input); changed.put("totalSeconds",700);
+    assertThat(call(HttpMethod.PUT,"/hyrox/"+id,changed,viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    ok(HttpMethod.PUT,"/hyrox/"+id,changed,athlete.token(),HttpStatus.OK);
+    assertThat(call(HttpMethod.PUT,"/wods/"+id,Map.of(),athlete.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    ok(HttpMethod.POST,"/sessions/"+id+"/complete",Map.of(),athlete.token(),HttpStatus.OK);
+    assertThat(call(HttpMethod.PUT,"/hyrox/"+id,changed,athlete.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(discover(viewer)).doesNotContain("Mon Hyrox");
+    String post=ok(HttpMethod.POST,"/sessions/"+id+"/posts",Map.of("audience","PUBLIC"),athlete.token(),HttpStatus.CREATED).get("id").toString();
+    for(String response:List.of(discover(viewer),call(HttpMethod.GET,"/posts/"+post,null,viewer.token()).getBody().toString())) {
+      assertThat(response).contains("HYROX","SkiErg","distanceMeters","totalSeconds","700")
+        .doesNotContain("Note strictement privée","clientId","startedAt","completedAt");
+    }
+    assertThat(call(HttpMethod.POST,"/posts/"+post+"/copy",Map.of(),viewer.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    ok(HttpMethod.PUT,"/me/profile",Map.of("displayName","Privé","private",true,"unit","kg"),athlete.token(),HttpStatus.OK);
+    assertThat(discover(viewer)).doesNotContain("Mon Hyrox","Note strictement privée");
+    assertThat(call(HttpMethod.GET,"/posts/"+post,null,viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    ok(HttpMethod.POST,"/users/"+athlete.id()+"/follow",Map.of(),viewer.token(),HttpStatus.ACCEPTED);
+    assertThat(following(viewer)).doesNotContain("Mon Hyrox");
+    ok(HttpMethod.POST,"/follow-requests/"+viewer.id()+"/accept",Map.of(),athlete.token(),HttpStatus.OK);
+    assertThat(following(viewer)).contains("Mon Hyrox","SkiErg").doesNotContain("Note strictement privée");
+    ok(HttpMethod.POST,"/users/"+viewer.id()+"/block",Map.of(),athlete.token(),HttpStatus.CREATED);
+    assertThat(following(viewer)).doesNotContain("Mon Hyrox");
+    assertThat(call(HttpMethod.GET,"/posts/"+post,null,viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+  }
 }
