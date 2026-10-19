@@ -1,5 +1,9 @@
 # APK Android de test — incréments Gym Bro
 
+## Tranche D1 — WOD CrossFit (candidat 2014, preuves de build à rattacher)
+
+Le candidat D1 ajoute AMRAP/EMOM/For Time avec score et time cap, sauvegarde locale WOD distincte et publication volontaire. Builder avec `--build-number=14` donne ARM64 versionCode 2014 ; garder même `dev.gymbro.prototype`, clé de test, HTTPS et JNI. Ne pas déclarer installé sur Pixel ni servi en TEST tant que le SHA exact, la revue permissions/projection, les vérifications de package et le smoke HTTPS après mise à jour limitée des services n'ont pas été consignés sur la carte mère. Le WOD n'est pas copiable comme modèle. APK antérieurs et données conservés.
+
 ## Tranche C — copie et adaptation (candidat 2013)
 
 Build demandé depuis `dev/mvp-product-ui` avec `--build-number=13` (APK ARM64 versionCode 2013), API HTTPS de test existante et même application/certificat test ; chemins/hash/validation dans le manifeste exact-SHA de la carte. La source ajoute copie autorisée → modèle personnel ajustable → brouillon existant → fin privée → publication distincte avec attribution conditionnelle. L'API et le gateway test doivent être actualisés et validés après revue indépendante de permissions **avant** distribution comme parcours utilisable ; ne pas installer/désinstaller ou toucher aux données d'un appareil dans ce run. Aucun Pixel connecté n'est présumé. Les captures web DÉMO ne prouvent pas un lancement Android réel.

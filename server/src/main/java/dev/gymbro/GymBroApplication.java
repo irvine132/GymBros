@@ -40,6 +40,8 @@ public class GymBroApplication {
   record SetResult(Integer reps, BigDecimal weight, String unit) {}
   record Exercise(String name, List<SetResult> sets) {}
   record Workout(UUID clientId, String title, List<Exercise> exercises) {}
+  record WodResult(Integer rounds, Integer reps, Integer timeSeconds, Boolean scaled) {}
+  record Wod(UUID clientId, String title, String format, Integer timeCapSeconds, List<String> movements, WodResult result) {}
   record Report(String reason) {}
   record ProfileUpdate(String displayName, @JsonProperty("private") Boolean privateAccount, String unit) {}
   record Publication(String audience) {}
@@ -176,6 +178,41 @@ public class GymBroApplication {
   private String encode(Workout in) {
     try { return json.writeValueAsString(in); } catch(Exception ex) { throw error(HttpStatus.BAD_REQUEST); }
   }
+  private void validateWod(Wod in) {
+    if(in==null || in.clientId()==null || in.title()==null || in.title().isBlank() || in.title().length()>100 ||
+      !List.of("AMRAP","EMOM","FOR_TIME").contains(in.format()==null?"":in.format()) ||
+      in.timeCapSeconds()==null || in.timeCapSeconds()<60 || in.timeCapSeconds()>7200 ||
+      in.movements()==null || in.movements().isEmpty() || in.movements().size()>20 ||
+      in.movements().stream().anyMatch(m->m==null || m.isBlank() || m.length()>80) || in.result()==null ||
+      in.result().scaled()==null) throw error(HttpStatus.BAD_REQUEST);
+    WodResult r=in.result();
+    if(in.format().equals("FOR_TIME") ?
+      r.timeSeconds()==null || r.timeSeconds()<1 || r.timeSeconds()>in.timeCapSeconds() || r.rounds()!=null || r.reps()!=null :
+      r.timeSeconds()!=null || r.rounds()==null || r.rounds()<0 || r.rounds()>1000 || r.reps()==null ||
+        r.reps()<0 || r.reps()>1000 || (r.rounds()==0 && r.reps()==0)) throw error(HttpStatus.BAD_REQUEST);
+  }
+  @PostMapping("/wods") @Transactional
+  public ResponseEntity<?> createWod(@RequestBody Wod in,HttpServletRequest request) {
+    UUID owner=actor(request); validateWod(in);
+    UUID id=UUID.randomUUID();
+    String payload;
+    try { payload=json.writeValueAsString(in); } catch(Exception ex) { throw error(HttpStatus.BAD_REQUEST); }
+    int inserted=db.update("INSERT INTO workout_session(id,owner_id,client_id,title,payload,result_schema_version) VALUES(?,?,?,?,?::jsonb,2) ON CONFLICT(owner_id,client_id) DO NOTHING",id,owner,in.clientId(),in.title().strip(),payload);
+    if(inserted==0) {
+      List<UUID> existing=db.query("SELECT id FROM workout_session WHERE owner_id=? AND client_id=? AND result_schema_version=2",(r,n)->(UUID)r.getObject(1),owner,in.clientId());
+      if(existing.isEmpty()) throw error(HttpStatus.CONFLICT);
+      id=existing.getFirst();
+    }
+    return ResponseEntity.status(inserted==1?HttpStatus.CREATED:HttpStatus.OK).body(session(id,owner));
+  }
+  @PutMapping("/wods/{id}")
+  public Map<String,Object> updateWod(@PathVariable UUID id,@RequestBody Wod in,HttpServletRequest request) {
+    UUID owner=actor(request); validateWod(in);
+    String payload;
+    try { payload=json.writeValueAsString(in); } catch(Exception ex) { throw error(HttpStatus.BAD_REQUEST); }
+    if(db.update("UPDATE workout_session SET title=?,payload=?::jsonb WHERE id=? AND owner_id=? AND client_id=? AND result_schema_version=2 AND status='DRAFT'",in.title().strip(),payload,id,owner,in.clientId())==0) throw error(HttpStatus.NOT_FOUND);
+    return session(id,owner);
+  }
   private Map<String,Object> session(UUID id, UUID owner) {
     List<Map<String,Object>> found=db.queryForList("SELECT s.id,s.client_id,s.title,s.payload::text AS payload,s.status,s.started_at,s.completed_at,s.result_schema_version,s.source_post_id,EXISTS(SELECT 1 FROM activity_post p WHERE p.session_id=s.id AND p.deleted_at IS NULL) AS published FROM workout_session s WHERE s.id=? AND s.owner_id=?",id,owner);
     if(found.isEmpty()) throw error(HttpStatus.NOT_FOUND);
@@ -192,13 +229,17 @@ public class GymBroApplication {
     UUID owner=actor(request); validate(in);
     UUID id=UUID.randomUUID();
     int inserted=db.update("INSERT INTO workout_session(id,owner_id,client_id,title,payload) VALUES(?,?,?,?,?::jsonb) ON CONFLICT(owner_id,client_id) DO NOTHING",id,owner,in.clientId(),in.title(),encode(in));
-    if(inserted==0) id=db.queryForObject("SELECT id FROM workout_session WHERE owner_id=? AND client_id=?",UUID.class,owner,in.clientId());
+    if(inserted==0) {
+      List<UUID> existing=db.query("SELECT id FROM workout_session WHERE owner_id=? AND client_id=? AND result_schema_version=1",(r,n)->(UUID)r.getObject(1),owner,in.clientId());
+      if(existing.isEmpty()) throw error(HttpStatus.CONFLICT);
+      id=existing.getFirst();
+    }
     return ResponseEntity.status(inserted==1?HttpStatus.CREATED:HttpStatus.OK).body(session(id,owner));
   }
   @PutMapping("/sessions/{id}")
   public Map<String,Object> update(@PathVariable UUID id,@RequestBody Workout in,HttpServletRequest request) {
     UUID owner=actor(request); validate(in);
-    int count=db.update("UPDATE workout_session SET title=?,payload=?::jsonb WHERE id=? AND owner_id=? AND client_id=? AND status='DRAFT'",in.title(),encode(in),id,owner,in.clientId());
+    int count=db.update("UPDATE workout_session SET title=?,payload=?::jsonb WHERE id=? AND owner_id=? AND client_id=? AND status='DRAFT' AND result_schema_version=1",in.title(),encode(in),id,owner,in.clientId());
     if(count==0) throw error(HttpStatus.NOT_FOUND);
     return session(id,owner);
   }
@@ -254,11 +295,24 @@ public class GymBroApplication {
     } catch(Exception ex) { throw new IllegalStateException("Invalid stored workout payload",ex); }
   }
   private Map<String,Object> publicRow(Map<String,Object> row,UUID viewer) {
-    Map<String,Object> out=new LinkedHashMap<>(Map.of("id",row.get("id"),"authorId",row.get("author_id"),"author",row.get("handle"),"title",row.get("title"),"sport","STRENGTH","exerciseCount",row.get("exercise_count"),"date",row.get("day").toString(),"exercises",publicExercises((String)row.get("payload"))));
+    boolean wod=((Number)row.get("result_schema_version")).intValue()==2;
+    Map<String,Object> out=new LinkedHashMap<>(Map.of("id",row.get("id"),"authorId",row.get("author_id"),"author",row.get("handle"),"title",row.get("title"),"sport",wod?"CROSSFIT":"STRENGTH","date",row.get("day").toString()));
+    if(wod) {
+      try {
+        JsonNode payload=json.readTree((String)row.get("payload"));
+        out.put("format",payload.path("format").asText());
+        out.put("timeCapSeconds",payload.path("timeCapSeconds").asInt());
+        out.put("movements",json.convertValue(payload.path("movements"),List.class));
+        JsonNode result=payload.path("result");
+        Map<String,Object> projected=new LinkedHashMap<>();
+        for(String key:List.of("rounds","reps","timeSeconds","scaled")) if(result.hasNonNull(key)) projected.put(key,json.convertValue(result.get(key),Object.class));
+        out.put("result",projected);
+      } catch(Exception ex) { throw new IllegalStateException("Invalid stored WOD",ex); }
+    } else { out.put("exerciseCount",row.get("exercise_count")); out.put("exercises",publicExercises((String)row.get("payload"))); }
     provenance(out,(UUID)row.get("source_post_id"),viewer);
     return out;
   }
-  private static final String SELECT="SELECT p.id,p.author_id,u.handle,p.title,p.published_at,(p.published_at AT TIME ZONE 'UTC')::date AS day,jsonb_array_length(s.payload->'exercises') AS exercise_count,s.payload::text AS payload,s.source_post_id FROM activity_post p JOIN app_user u ON u.id=p.author_id JOIN workout_session s ON s.id=p.session_id WHERE ";
+  private static final String SELECT="SELECT p.id,p.author_id,u.handle,p.title,p.published_at,(p.published_at AT TIME ZONE 'UTC')::date AS day,CASE WHEN s.result_schema_version=1 THEN jsonb_array_length(s.payload->'exercises') ELSE NULL END AS exercise_count,s.result_schema_version,s.payload::text AS payload,s.source_post_id FROM activity_post p JOIN app_user u ON u.id=p.author_id JOIN workout_session s ON s.id=p.session_id WHERE ";
   private Map<String,Object> post(UUID id,UUID actor) {
     List<Map<String,Object>> found=db.queryForList(SELECT+DETAIL+" AND p.id=?",actor,actor,actor,actor,id);
     if(found.isEmpty()) throw error(HttpStatus.NOT_FOUND);
@@ -295,6 +349,7 @@ public class GymBroApplication {
     List<Map<String,Object>> found=db.queryForList(SELECT+DETAIL+" AND p.id=?",owner,owner,owner,owner,id);
     if(found.isEmpty()) throw error(HttpStatus.NOT_FOUND);
     Map<String,Object> source=found.getFirst();
+    if(((Number)source.get("result_schema_version")).intValue()!=1) throw error(HttpStatus.BAD_REQUEST);
     String title=(String)source.get("title");
     String definition;
     try { definition=json.writeValueAsString(Map.of("title",title,"exercises",publicExercises((String)source.get("payload")))); }

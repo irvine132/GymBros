@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 import 'native_diagnostic_io.dart'
     if (dart.library.js_interop) 'native_diagnostic_web.dart' as native;
 import 'template_screen.dart';
+import 'wod_screen.dart';
 
 const apiBase = String.fromEnvironment('API_BASE', defaultValue: 'http://127.0.0.1:18081/api/v1');
 const diagnosticBuild = String.fromEnvironment('DIAGNOSTIC_BUILD', defaultValue: 'unknown');
@@ -30,7 +31,7 @@ ThemeData gymTheme() => ThemeData(
   outlinedButtonTheme: OutlinedButtonThemeData(style: OutlinedButton.styleFrom(minimumSize: const Size(48, 52))),
 );
 
-String sportLabel(Object? sport) => sport == 'STRENGTH' ? 'Musculation' : 'Séance';
+String sportLabel(Object? sport) => sport == 'STRENGTH' ? 'Musculation' : sport == 'CROSSFIT' ? 'CrossFit' : 'Séance';
 bool isTechnicalPost(Map post) {
   final title = '${post['title']}', author = '${post['author']}';
   return (RegExp(r'^Public smoke [0-9a-f]{8}$').hasMatch(title) &&
@@ -44,6 +45,12 @@ String dateLabel(Object? value) {
   return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
 }
 String exerciseSummary(Map post) {
+  if (post['sport'] == 'CROSSFIT') {
+    final result = post['result'] as Map? ?? {};
+    final score = post['format'] == 'FOR_TIME' ? '${result['timeSeconds']} s'
+      : '${result['rounds']} tours + ${result['reps']} reps';
+    return '${post['format']} · cap ${post['timeCapSeconds']} s · $score · ${result['scaled'] == true ? 'Scaled' : 'RX'} · ${(post['movements'] as List? ?? []).join(', ')}';
+  }
   final exercises = post['exercises'];
   if (exercises is! List || exercises.isEmpty) return '${post['exerciseCount'] ?? 0} exercice(s)';
   return exercises.map((item) {
@@ -126,6 +133,16 @@ class DraftStore {
   }
   Future<void> clear(String user) async {
     if (!await prefs.remove('draft:$user')) throw StateError('Draft not cleared');
+  }
+  Map<String, dynamic>? readWod(String user) {
+    final value = prefs.getString('wod:$user');
+    return value == null ? null : jsonDecode(value) as Map<String, dynamic>;
+  }
+  Future<void> saveWod(String user, Map<String,dynamic> data) async {
+    if (!await prefs.setString('wod:$user', jsonEncode(data))) throw StateError('WOD draft not saved');
+  }
+  Future<void> clearWod(String user) async {
+    if (!await prefs.remove('wod:$user')) throw StateError('WOD draft not cleared');
   }
 }
 
@@ -411,7 +428,7 @@ class _HomeScreenState extends State<HomeScreen> {
           if (post['sourceUnavailable'] == true) const Text('Source non disponible'),
         ])),
         actions: [
-          TextButton(onPressed: () { Navigator.pop(context); copyPost(id); }, child: const Text('Copier et essayer')),
+          if (post['sport'] == 'STRENGTH') TextButton(onPressed: () { Navigator.pop(context); copyPost(id); }, child: const Text('Copier et essayer')),
           if (post['authorId'] != null && post['authorId'] != widget.userId) ...[
             TextButton(onPressed: () async {
               Navigator.pop(context);
@@ -457,6 +474,10 @@ class _HomeScreenState extends State<HomeScreen> {
     await Navigator.push(context, MaterialPageRoute(builder: (_) => WorkoutScreen(api: widget.api, store: widget.store, userId: widget.userId)));
     refresh();
   }
+  Future<void> trainWod() async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => WodScreen(api: widget.api, store: widget.store, userId: widget.userId)));
+    if (mounted) refresh();
+  }
   Future<void> searchAthlete() async {
     await Navigator.push(context, MaterialPageRoute(builder: (_) => AthleteSearchScreen(api: widget.api, userId: widget.userId)));
     if (mounted) refresh();
@@ -494,6 +515,20 @@ class _HomeScreenState extends State<HomeScreen> {
       final item = await widget.api.call('GET', '/sessions/${session['id']}') as Map;
       if (!mounted) return;
       if (item['status'] == 'DRAFT') {
+        if (item['resultSchemaVersion'] == 2) {
+          final localWod = widget.store.readWod(widget.userId);
+          if (localWod != null && localWod['clientId'] != item['clientId']) {
+            setState(() => error = 'Un autre WOD est déjà en brouillon sur cet appareil. Terminez-le avant de reprendre cette séance du compte.');
+            return;
+          }
+          final workout = item['workout'] as Map;
+          await widget.store.saveWod(widget.userId, {
+            'clientId': item['clientId'], 'title': item['title'], 'format': workout['format'],
+            'timeCapSeconds': workout['timeCapSeconds'], 'movements': workout['movements'], 'result': workout['result'],
+          });
+          await trainWod();
+          return;
+        }
         final local = widget.store.read(widget.userId);
         if (local != null && local['clientId'] != item['clientId']) {
           setState(() => error = 'Un autre brouillon est déjà sur cet appareil. Terminez-le avant de reprendre cette séance du compte.');
@@ -546,6 +581,8 @@ class _HomeScreenState extends State<HomeScreen> {
   ]);
   Widget historyView() => ListView(padding: const EdgeInsets.all(16), children: [
     Text('Mes séances', style: Theme.of(context).textTheme.headlineLarge),
+    const SizedBox(height: 12), FilledButton.icon(onPressed: trainWod, icon: const Icon(Icons.timer_outlined),
+      label: Text(widget.store.readWod(widget.userId) == null ? 'Créer un WOD CrossFit' : 'Reprendre mon WOD')),
     const SizedBox(height: 8), const Text('Tes modèles restent personnels. Adapte-les avant de démarrer une nouvelle séance.'),
     const SizedBox(height: 12), Text('Mes modèles', style: Theme.of(context).textTheme.titleLarge),
     if (templates.isEmpty) gymCard(child: const Text('Aucun modèle. Ouvre une séance visible du fil et choisis « Copier et essayer ».')),
@@ -560,6 +597,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (widget.store.read(widget.userId) != null) gymCard(child: ListTile(
       leading: const Icon(Icons.edit_note), title: const Text('Brouillon sur cet appareil'),
       subtitle: const Text('Privé · reprend là où tu en étais'), onTap: train)),
+    if (widget.store.readWod(widget.userId) != null) gymCard(child: ListTile(
+      leading: const Icon(Icons.timer_outlined), title: const Text('Brouillon WOD sur cet appareil'),
+      subtitle: const Text('Privé · reprends tes mouvements et ton score'), onTap: trainWod)),
     if (history.isEmpty && !busy) gymCard(child: const Text('Aucune séance enregistrée sur ton compte. Commence par ton premier entraînement.')),
     for (final entry in history) gymCard(child: ListTile(
       title: Text('${entry['title']}'),
@@ -865,7 +905,7 @@ class _CompletedScreenState extends State<CompletedScreen> {
   Future<void> publish(String audience) async {
     final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
       title: const Text('Partager cette séance ?'),
-      content: Text('Son titre, tes exercices, séries, répétitions et charges seront visibles ${audience == 'PUBLIC' ? 'publiquement (sauf si ton compte est privé)' : 'uniquement par tes abonnés acceptés'}. Pas ton email ni l’heure précise.'),
+      content: Text('Son titre, ${widget.session['resultSchemaVersion'] == 2 ? 'son format, ses mouvements et ton résultat' : 'tes exercices, séries, répétitions et charges'} seront visibles ${audience == 'PUBLIC' ? 'publiquement (sauf si ton compte est privé)' : 'uniquement par tes abonnés acceptés'}. Pas ton email ni l’heure précise.'),
       actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Rester privé')),
         FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Confirmer la publication'))],
     ));
@@ -881,6 +921,11 @@ class _CompletedScreenState extends State<CompletedScreen> {
       const SizedBox(height: 12), Text('Bien joué !', style: Theme.of(context).textTheme.headlineLarge),
       const SizedBox(height: 12), Text('${widget.session['title']}', style: Theme.of(context).textTheme.titleLarge),
       const SizedBox(height: 12), Text(published ? 'Séance partagée avec l’audience choisie.' : 'Enregistrée dans votre historique privé. La publication est facultative.'),
+      if (widget.session['resultSchemaVersion'] == 2) gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('${widget.session['workout']['format']} · ${widget.session['workout']['timeCapSeconds']} s de time cap', style: Theme.of(context).textTheme.titleLarge),
+        Text((widget.session['workout']['movements'] as List).join(' · ')),
+        Text(exerciseSummary({...widget.session['workout'], 'sport': 'CROSSFIT'})),
+      ])),
       for (final exercise in (widget.session['workout']?['exercises'] as List? ?? [])) ...[
         const SizedBox(height: 12), gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('${exercise['name']}', style: Theme.of(context).textTheme.titleLarge),

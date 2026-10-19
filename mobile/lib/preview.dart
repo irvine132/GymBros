@@ -10,21 +10,28 @@ class PreviewApi extends Api {
   @override Future<dynamic> call(String method, String path, [Object? body]) async {
     if (path == '/feed') { return [
       if (published) {'id': 'demo-post', 'title': workout?['title'] ?? 'Force du lundi', 'author': 'demo_athlete',
-        'sport': 'STRENGTH', 'date': '2026-10-19', 'exerciseCount': (workout?['exercises'] as List?)?.length ?? 1,
-       if (template != null) 'sourceAuthor':'bravo_demo',
-       'exercises': workout?['exercises'] ?? [{'name': 'Squat', 'sets': [{'reps': 5, 'weight': 80, 'unit': 'kg'}]}]},
+        'sport': workout?['format'] == null ? 'STRENGTH' : 'CROSSFIT', 'date': '2026-10-19',
+        if (workout?['format'] != null) ...{'format':workout!['format'], 'timeCapSeconds':workout!['timeCapSeconds'],
+          'movements':workout!['movements'], 'result':workout!['result']},
+        if (workout?['format'] == null) 'exerciseCount': (workout?['exercises'] as List?)?.length ?? 1,
+        if (template != null) 'sourceAuthor':'bravo_demo',
+       if (workout?['format'] == null) 'exercises': workout?['exercises'] ?? [{'name': 'Squat', 'sets': [{'reps': 5, 'weight': 80, 'unit': 'kg'}]}]},
       {'id':'demo-source','authorId':'demo-bravo','author':'bravo_demo','title':'Squat du matin · démo à copier',
        'sport':'STRENGTH','date':'2026-10-19','exerciseCount':1,
        'exercises':[{'name':'Squat','sets':[{'reps':5,'weight':80,'unit':'kg'}]}]},
     ]; }
     if (path == '/sessions' && method == 'GET') { return workout == null ? [] : [
       {'id': 'demo-session', 'title': workout!['title'], 'status': completed ? 'COMPLETED' : 'DRAFT', 'started_at': '2026-10-19'}]; }
-    if (path == '/sessions' && method == 'POST') { if (!completed) workout = body as Map; return {'id': 'demo-session', 'status': completed ? 'COMPLETED' : 'DRAFT'}; }
+    if ((path == '/sessions' || path == '/wods') && method == 'POST') {
+      if (!completed) workout = body as Map;
+      return {'id': 'demo-session', 'status': completed ? 'COMPLETED' : 'DRAFT'};
+    }
     if (path == '/sessions/demo-session' && method == 'PUT') { workout = body as Map; return {}; }
+    if (path == '/wods/demo-session' && method == 'PUT') { workout = body as Map; return {}; }
     if (path == '/sessions/demo-session/complete' || path == '/sessions/demo-session') {
       if (path.endsWith('/complete')) completed = true;
       return {'id': 'demo-session', 'title': workout?['title'] ?? 'Force du lundi', 'status': completed ? 'COMPLETED' : 'DRAFT',
-        'workout': workout, 'published': published};
+        'workout': workout, 'resultSchemaVersion': workout?['format'] == null ? 1 : 2, 'published': published};
     }
     if (path == '/sessions/demo-session/posts') { published = true; return {'id': 'demo-post'}; }
     if (path == '/posts/demo-post') return (await call('GET', '/feed') as List).first;

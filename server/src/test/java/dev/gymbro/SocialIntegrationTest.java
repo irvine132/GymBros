@@ -136,10 +136,60 @@ class SocialIntegrationTest {
     ok(HttpMethod.PUT,"/me/profile",Map.of("displayName","Privé","private",true,"unit","kg"),author.token(),HttpStatus.OK);
     assertThat(call(HttpMethod.POST,path,Map.of(),third.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     assertThat(call(HttpMethod.POST,path,Map.of(),copier.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    for (String endpoint : List.of("/templates", "/feed", "/feed/following")) {
+      var response=http.exchange("/api/v1"+endpoint,HttpMethod.GET,req(null,copier.token()),String.class);
+      assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+      assertThat(response.getBody()).doesNotContain(source,author.handle());
+    }
+    assertThat(http.exchange("/api/v1/sessions",HttpMethod.GET,req(null,copier.token()),String.class).getBody())
+      .doesNotContain(source,author.handle());
     assertThat(call(HttpMethod.GET,"/templates/"+id,null,copier.token()).getBody().toString()).contains("sourceUnavailable=true").doesNotContain(source,author.handle());
     assertThat(call(HttpMethod.GET,"/sessions/"+session,null,copier.token()).getBody().toString()).contains("sourceUnavailable=true").doesNotContain(source,author.handle());
     assertThat(call(HttpMethod.GET,"/posts/"+copyPost,null,third.token()).getBody().toString()).contains("sourceUnavailable=true").doesNotContain(source,author.handle());
     ok(HttpMethod.POST,"/users/"+copier.id()+"/block",Map.of(),author.token(),HttpStatus.CREATED);
     assertThat(call(HttpMethod.POST,path,Map.of(),copier.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+  }
+  @Test void crossfitWodDraftResumeFinishAndPublishWithoutStrengthResults() {
+    User author=user("wodathlete"), viewer=user("wodviewer");
+    String title="WOD "+UUID.randomUUID();
+    var input=Map.of("clientId",UUID.randomUUID().toString(),"title",title,"format","AMRAP",
+      "timeCapSeconds",720,"movements",List.of("Burpees","Tractions"),
+      "result",Map.of("rounds",5,"reps",7,"scaled",false));
+    var invalid=new java.util.HashMap<String,Object>(input); invalid.put("timeCapSeconds",0);
+    assertThat(call(HttpMethod.POST,"/wods",invalid,author.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    invalid.put("timeCapSeconds",720); invalid.put("format","FOR_TIME");
+    assertThat(call(HttpMethod.POST,"/wods",invalid,author.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    invalid.put("format","AMRAP"); invalid.put("result",Map.of("rounds",0,"reps",0,"scaled",false));
+    assertThat(call(HttpMethod.POST,"/wods",invalid,author.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    var created=ok(HttpMethod.POST,"/wods",input,author.token(),HttpStatus.CREATED);
+    String session=created.get("id").toString();
+    assertThat(ok(HttpMethod.POST,"/wods",input,author.token(),HttpStatus.OK).get("id")).isEqualTo(session);
+    assertThat(call(HttpMethod.POST,"/sessions",Map.of("clientId",input.get("clientId"),"title","Wrong sport",
+      "exercises",List.of(Map.of("name","Squat","sets",List.of(Map.of("reps",5,"weight",20,"unit","kg"))))),author.token()).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+    assertThat(created.toString()).contains("AMRAP","Burpees","resultSchemaVersion=2").doesNotContain("weight");
+    assertThat(call(HttpMethod.GET,"/sessions/"+session,null,viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    var changed=new java.util.HashMap<String,Object>(input);
+    changed.put("result",Map.of("rounds",6,"reps",3,"scaled",true));
+    ok(HttpMethod.PUT,"/wods/"+session,changed,author.token(),HttpStatus.OK);
+    assertThat(call(HttpMethod.PUT,"/sessions/"+session,Map.of("clientId",input.get("clientId"),"title","Wrong sport",
+      "exercises",List.of(Map.of("name","Squat","sets",List.of(Map.of("reps",5,"weight",20,"unit","kg"))))),author.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.PUT,"/wods/"+session,changed,viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.GET,"/sessions/"+session,null,author.token()).getBody().toString()).contains("rounds=6","scaled=true");
+    ok(HttpMethod.POST,"/sessions/"+session+"/complete",Map.of(),author.token(),HttpStatus.OK);
+    assertThat(call(HttpMethod.PUT,"/wods/"+session,changed,author.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(discover(viewer)).doesNotContain(title);
+    String post=ok(HttpMethod.POST,"/sessions/"+session+"/posts",Map.of("audience","PUBLIC"),author.token(),HttpStatus.CREATED).get("id").toString();
+    assertThat(discover(viewer)).contains(title,"AMRAP","Burpees","rounds","timeCapSeconds").doesNotContain("clientId","startedAt");
+    assertThat(call(HttpMethod.GET,"/posts/"+post,null,viewer.token()).getBody().toString()).contains("AMRAP");
+    assertThat(call(HttpMethod.POST,"/posts/"+post+"/copy",Map.of(),viewer.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    var timeWod=new java.util.HashMap<String,Object>(input);
+    timeWod.put("clientId",UUID.randomUUID().toString()); timeWod.put("format","FOR_TIME");
+    timeWod.put("result",Map.of("timeSeconds",610,"scaled",true));
+    var timed=ok(HttpMethod.POST,"/wods",timeWod,author.token(),HttpStatus.CREATED);
+    assertThat(timed.toString()).contains("FOR_TIME","timeSeconds=610");
+    assertThat(((Map)((Map)timed.get("workout")).get("result")).get("rounds")).isNull();
+    var emom=new java.util.HashMap<String,Object>(input);
+    emom.put("clientId",UUID.randomUUID().toString()); emom.put("format","EMOM");
+    assertThat(ok(HttpMethod.POST,"/wods",emom,author.token(),HttpStatus.CREATED).toString()).contains("EMOM");
   }
 }

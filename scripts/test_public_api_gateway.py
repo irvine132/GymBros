@@ -17,8 +17,11 @@ class GatewayTest(unittest.TestCase):
         identifier = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
         for method, path in [('GET', '/templates'), ('GET', f'/templates/{identifier}'),
                              ('PUT', f'/templates/{identifier}'), ('POST', f'/posts/{identifier}/copy'),
-                             ('POST', f'/templates/{identifier}/sessions')]:
+                             ('POST', f'/templates/{identifier}/sessions'), ('POST', '/wods'),
+                             ('PUT', f'/wods/{identifier}')]:
             self.assertEqual(route(method, '/gym-bro/api/v1' + path), '/api/v1' + path)
+        self.assertIsNone(route('GET', '/api/v1/wods'))
+        self.assertIsNone(route('PUT', '/api/v1/wods/not-a-uuid'))
         self.assertIsNone(route('GET', '/api/v1/templates?owner=other'))
         self.assertIsNone(route('DELETE', '/api/v1/templates/' + identifier))
         self.assertIsNone(route('GET', '/api/v1/users?query=%2e%2e%2fadmin'))

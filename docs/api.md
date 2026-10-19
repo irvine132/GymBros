@@ -53,3 +53,15 @@ Voir `docs/decisions/ADR-004-copy-templates-provenance.md`. Tous les chemins exi
 | POST | `/templates/{id}/sessions` | `{clientId:UUID}` ; 201 brouillon personnel indépendant contenant le snapshot, retry 200 même séance via clientId |
 
 `/sessions/{id}` du propriétaire et les projections post/fil du copieur portent `sourcePostId` et `sourceAuthor` uniquement si le lecteur est actuellement autorisé à lire la source. Sinon `sourceUnavailable:true` sans identité, titre ou ID source ; la copie acquise conserve ses propres cibles après révocation. La session est privée par défaut, `complete` et `posts` existants restent séparés. Aucun changement de politique de comptes ni d'audience. La version est celle de la définition courante ; l'historique des anciennes éditions et les templates créés de zéro sont reportés, pas d'affirmation CRUD complet/version history dans cette tranche.
+
+## Tranche D1 — WOD CrossFit (sans migration de table)
+
+Voir `docs/decisions/ADR-005-crossfit-wod-results.md`. Même bearer, propriétaire et modèle de publication opt-in que les séances précédentes ; le payload privé est `resultSchemaVersion:2`. La création/réédition STRENGTH ne peut pas modifier un WOD et un retry avec `clientId` d'une autre discipline renvoie 409.
+
+| Méthode | Chemin | Résultat |
+|---|---|---|
+| POST | `/wods` | `{clientId:UUID,title,format:"AMRAP"|"EMOM"|"FOR_TIME",timeCapSeconds:60..7200,movements:["Burpees"],result:{rounds:5,reps:7,scaled:false}}` ; For Time utilise `{timeSeconds:610,scaled:true}`. 201 créé, 200 même clientId WOD ; 400 score/format hors contrat |
+| PUT | `/wods/{id}` | même corps, uniquement brouillon du propriétaire, sinon 404 |
+| GET/POST | `/sessions/{id}`, `/sessions/{id}/complete`, `/sessions/{id}/posts` | réutilisent détail privé, fin privée et publication volontaire existants ; aucune conversion implicite |
+
+Projection publique WOD uniquement `{id,authorId,author,title,date,sport:"CROSSFIT",format,timeCapSeconds,movements,result}` avec `result` limité à rounds/reps/timeSeconds/scaled. Le time cap est un objectif d'effort, pas un horaire de début. Pas de session brute, `clientId` ni heures précises. `/posts/{id}/copy` refuse les WOD avec 400 (copie version 1 STRENGTH seulement), après contrôle de visibilité ; aucun bouton Copier affiché pour un WOD.
