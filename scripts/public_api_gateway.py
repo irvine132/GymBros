@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 PREFIX = '/gym-bro/api/v1'
 UUID = r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
 ROUTES = {
-    'GET': (r'/me', r'/feed', r'/sessions', rf'/sessions/{UUID}', rf'/posts/{UUID}'),
+    'GET': (r'/me', r'/me/summary', r'/exercises', r'/feed', r'/sessions', rf'/sessions/{UUID}', rf'/posts/{UUID}'),
     'POST': (r'/auth/register', r'/auth/login', r'/auth/logout', r'/sessions',
              rf'/sessions/{UUID}/complete', rf'/sessions/{UUID}/posts',
              rf'/posts/{UUID}/reports', rf'/users/{UUID}/block'),

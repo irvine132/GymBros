@@ -16,6 +16,10 @@ class SliceAIntegrationTest {
   @Test void twoAccountsPrivateByDefaultAndBlock() {
     String suffix = UUID.randomUUID().toString().substring(0, 8);
     String a = register("alice" + suffix), b = register("bob" + suffix);
+    var catalogue = http.exchange("/api/v1/exercises",HttpMethod.GET,request(null,a),String.class);
+    assertThat(catalogue.getStatusCode()).isEqualTo(HttpStatus.OK);
+    assertThat(catalogue.getBody().toString()).contains("Squat", "Développé couché", "kg");
+    assertThat(http.exchange("/api/v1/exercises",HttpMethod.GET,request(null,null),String.class).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     assertThat(http.exchange("/api/v1/auth/register", HttpMethod.POST, request(Map.of("handle","alice" + suffix,"email","other" + suffix + "@example.test","password","local-demo-test-password"),null), String.class).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
     assertThat(http.exchange("/api/v1/auth/login", HttpMethod.POST, request(Map.of("email","alice" + suffix + "@example.test","password","incorrect-password"),null), String.class).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     String title = "Strength " + suffix;
@@ -23,6 +27,7 @@ class SliceAIntegrationTest {
     Map<String,Object> workout = Map.of("clientId", sessionKey, "title", title, "exercises", List.of(Map.of("name", "Squat", "sets", List.of(Map.of("reps", 5, "weight", 80, "unit", "kg")))));
     Map<?,?> created = post("/api/v1/sessions", workout, a, HttpStatus.CREATED);
     String id = created.get("id").toString();
+    assertThat(created.get("published")).isEqualTo(false);
     assertThat(post("/api/v1/sessions", workout, a, HttpStatus.OK).get("id")).isEqualTo(id);
     assertThat(get("/api/v1/sessions/" + id, b).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     assertThat(http.exchange("/api/v1/sessions/" + id, HttpMethod.PUT, request(workout,b), String.class).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
@@ -34,10 +39,15 @@ class SliceAIntegrationTest {
     assertThat(feed(b)).doesNotContain(title);
     assertThat(http.exchange("/api/v1/sessions/" + id + "/posts", HttpMethod.POST, request(Map.of(), b), String.class).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     Map<?,?> post = post("/api/v1/sessions/" + id + "/posts", Map.of(), a, HttpStatus.CREATED);
+    assertThat(get("/api/v1/sessions/" + id, a).getBody().get("published")).isEqualTo(true);
     String postId = post.get("id").toString();
     assertThat(post("/api/v1/sessions/" + id + "/posts", Map.of(), a, HttpStatus.OK).get("id")).isEqualTo(postId);
     assertThat(feed(b)).contains(title).doesNotContain("startedAt", "email", "token");
+    assertThat(feed(b)).contains("Squat", "80", "sets").doesNotContain("clientId", "payload", "completedAt");
     assertThat(get("/api/v1/posts/" + postId, b).getStatusCode()).isEqualTo(HttpStatus.OK);
+    assertThat(get("/api/v1/posts/" + postId, b).getBody().toString()).contains("Squat", "80").doesNotContain("clientId", "startedAt", "email");
+    assertThat(get("/api/v1/me/summary", b).getBody().toString()).contains("sessions=0");
+    assertThat(get("/api/v1/me/summary", a).getBody().toString()).contains("sessions=1");
     post("/api/v1/posts/" + postId + "/reports", Map.of("reason", "Review please"), b, HttpStatus.CREATED);
     post("/api/v1/posts/" + postId + "/reports", Map.of("reason", "Review please"), b, HttpStatus.OK);
     Map<?,?> me = get("/api/v1/me", a).getBody();

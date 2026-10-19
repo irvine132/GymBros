@@ -1,6 +1,7 @@
 package dev.gymbro;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.servlet.http.HttpServletRequest;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -80,6 +81,25 @@ public class GymBroApplication {
   @GetMapping("/me") public Map<String,Object> me(HttpServletRequest request) {
     return db.queryForMap("SELECT id,handle FROM app_user WHERE id=?",actor(request));
   }
+  @GetMapping("/me/summary") public Map<String,Object> mySummary(HttpServletRequest request) {
+    UUID owner=actor(request);
+    return Map.of("handle",db.queryForObject("SELECT handle FROM app_user WHERE id=?",String.class,owner),
+      "sessions",db.queryForObject("SELECT count(*) FROM workout_session WHERE owner_id=? AND status='COMPLETED'",Integer.class,owner),
+      "publications",db.queryForObject("SELECT count(*) FROM activity_post WHERE author_id=? AND deleted_at IS NULL",Integer.class,owner));
+  }
+  // Versioned-in-source starter catalogue: the saved workout contains its own name snapshot.
+  @GetMapping("/exercises") public List<Map<String,String>> exercises(HttpServletRequest request) {
+    actor(request);
+    return List.of(
+      Map.of("name","Squat","category","Jambes","unit","kg"),
+      Map.of("name","Soulevé de terre","category","Jambes","unit","kg"),
+      Map.of("name","Développé couché","category","Haut du corps","unit","kg"),
+      Map.of("name","Développé épaules","category","Haut du corps","unit","kg"),
+      Map.of("name","Rowing barre","category","Dos","unit","kg"),
+      Map.of("name","Tractions","category","Dos","unit","kg"),
+      Map.of("name","Fentes","category","Jambes","unit","kg"),
+      Map.of("name","Curl biceps","category","Bras","unit","kg"));
+  }
   private void validate(Workout in) {
     if(in==null || in.clientId()==null || in.title()==null || in.title().isBlank() || in.title().length()>100 || in.exercises()==null || in.exercises().isEmpty() || in.exercises().size()>20) throw error(HttpStatus.BAD_REQUEST);
     for(Exercise exercise:in.exercises()) {
@@ -93,10 +113,10 @@ public class GymBroApplication {
     try { return json.writeValueAsString(in); } catch(Exception ex) { throw error(HttpStatus.BAD_REQUEST); }
   }
   private Map<String,Object> session(UUID id, UUID owner) {
-    List<Map<String,Object>> found=db.queryForList("SELECT id,client_id,title,payload::text AS payload,status,started_at,completed_at,result_schema_version FROM workout_session WHERE id=? AND owner_id=?",id,owner);
+    List<Map<String,Object>> found=db.queryForList("SELECT s.id,s.client_id,s.title,s.payload::text AS payload,s.status,s.started_at,s.completed_at,s.result_schema_version,EXISTS(SELECT 1 FROM activity_post p WHERE p.session_id=s.id AND p.deleted_at IS NULL) AS published FROM workout_session s WHERE s.id=? AND s.owner_id=?",id,owner);
     if(found.isEmpty()) throw error(HttpStatus.NOT_FOUND);
     Map<String,Object> row=found.getFirst();
-    try { return Map.of("id",row.get("id"),"clientId",row.get("client_id"),"title",row.get("title"),"workout",json.readTree((String)row.get("payload")),"status",row.get("status"),"startedAt",row.get("started_at").toString(),"resultSchemaVersion",row.get("result_schema_version")); }
+    try { return Map.of("id",row.get("id"),"clientId",row.get("client_id"),"title",row.get("title"),"workout",json.readTree((String)row.get("payload")),"status",row.get("status"),"startedAt",row.get("started_at").toString(),"published",row.get("published"),"resultSchemaVersion",row.get("result_schema_version")); }
     catch(Exception ex) { throw new IllegalStateException(ex); }
   }
   @PostMapping("/sessions") @Transactional
@@ -135,10 +155,25 @@ public class GymBroApplication {
     return ResponseEntity.status(inserted==1?HttpStatus.CREATED:HttpStatus.OK).body(post(found.getFirst(),owner));
   }
   private static final String VISIBLE="p.deleted_at IS NULL AND p.audience='PUBLIC' AND NOT EXISTS (SELECT 1 FROM user_block b WHERE (b.blocker_id=? AND b.blocked_id=p.author_id) OR (b.blocked_id=? AND b.blocker_id=p.author_id))";
-  private Map<String,Object> publicRow(Map<String,Object> row) {
-    return Map.of("id",row.get("id"),"authorId",row.get("author_id"),"author",row.get("handle"),"title",row.get("title"),"sport","STRENGTH","exerciseCount",row.get("exercise_count"),"date",row.get("day").toString());
+  private List<Map<String,Object>> publicExercises(String payload) {
+    try {
+      JsonNode nodes=json.readTree(payload).path("exercises");
+      List<Map<String,Object>> result=new ArrayList<>();
+      if(!nodes.isArray()) return result;
+      for(JsonNode exercise:nodes) {
+        List<Map<String,Object>> sets=new ArrayList<>();
+        for(JsonNode set:exercise.path("sets")) {
+          sets.add(Map.of("reps",set.path("reps").asInt(),"weight",set.path("weight").decimalValue(),"unit",set.path("unit").asText()));
+        }
+        result.add(Map.of("name",exercise.path("name").asText(),"sets",sets));
+      }
+      return result;
+    } catch(Exception ex) { throw new IllegalStateException("Invalid stored workout payload",ex); }
   }
-  private String SELECT="SELECT p.id,p.author_id,u.handle,p.title,(p.published_at AT TIME ZONE 'UTC')::date AS day,jsonb_array_length(s.payload->'exercises') AS exercise_count FROM activity_post p JOIN app_user u ON u.id=p.author_id JOIN workout_session s ON s.id=p.session_id WHERE ";
+  private Map<String,Object> publicRow(Map<String,Object> row) {
+    return Map.of("id",row.get("id"),"authorId",row.get("author_id"),"author",row.get("handle"),"title",row.get("title"),"sport","STRENGTH","exerciseCount",row.get("exercise_count"),"date",row.get("day").toString(),"exercises",publicExercises((String)row.get("payload")));
+  }
+  private static final String SELECT="SELECT p.id,p.author_id,u.handle,p.title,(p.published_at AT TIME ZONE 'UTC')::date AS day,jsonb_array_length(s.payload->'exercises') AS exercise_count,s.payload::text AS payload FROM activity_post p JOIN app_user u ON u.id=p.author_id JOIN workout_session s ON s.id=p.session_id WHERE ";
   private Map<String,Object> post(UUID id,UUID actor) {
     List<Map<String,Object>> found=db.queryForList(SELECT+VISIBLE+" AND p.id=?",actor,actor,id);
     if(found.isEmpty()) throw error(HttpStatus.NOT_FOUND);

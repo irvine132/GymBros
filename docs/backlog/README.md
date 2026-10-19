@@ -6,7 +6,9 @@ Format des acceptations : Given (état initial), When (action), Then (résultat 
 
 ## Correspondance produit → carte de suivi (état bloqué, non achevé par défaut)
 
-Ce mapping est un inventaire, pas une déclaration d'achèvement. Pour les lots A, les preuves de la carte mère `t_a6f8efac` s'appliquent seulement aux critères effectivement couverts ; TR-01 (catalogue), par exemple, reste non réalisé. Ne pas promouvoir ces cartes sans vérifier leur propre acceptation et la revue sécurité requise.
+Ce mapping est un inventaire, pas une déclaration d'achèvement. Pour les lots A, les preuves de la carte mère `t_a6f8efac` s'appliquent seulement aux critères effectivement couverts ; TR-01 (catalogue) dispose maintenant d'une première implémentation vérifiée, mais la carte de suivi ne doit pas être promue sans vérifier sa propre acceptation et la revue requise.
+
+Tranche visuelle MVP en cours sur `dev/mvp-product-ui` : catalogue de départ, accueil/cartes, séance multi-mouvements, historique/profil et projection publique sont implémentés et testés localement, mais ne valent **pas** validation des 53 cartes de suivi. Les preuves finales, captures de rendu, APK et avis visuel déterminent l'état réel de cette tranche. Après retour, planifier B–E dans l'ordre des dépendances ci-dessous, sans assimiler cette première tranche au MVP complet ; OAuth Google non configuré et hors prérequis d'usage email.
 
 | Epic | IDs produit = cartes |
 |---|---|

@@ -7,6 +7,8 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(route('GET', '/gym-bro/api/v1/feed?offset=1'), '/api/v1/feed?offset=1')
         # Tailscale --set-path strips /gym-bro before forwarding to this loopback gateway.
         self.assertEqual(route('GET', '/api/v1/me'), '/api/v1/me')
+        self.assertEqual(route('GET', '/api/v1/me/summary'), '/api/v1/me/summary')
+        self.assertEqual(route('GET', '/api/v1/exercises'), '/api/v1/exercises')
         self.assertEqual(route('GET', '/api/v1/feed?offset=1'), '/api/v1/feed?offset=1')
         self.assertEqual(route('POST', '/gym-bro/api/v1/auth/login'), '/api/v1/auth/login')
         self.assertEqual(route('POST', '/gym-bro/api/v1/sessions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/posts'),
