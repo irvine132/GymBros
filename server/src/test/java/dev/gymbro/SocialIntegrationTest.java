@@ -221,7 +221,11 @@ class SocialIntegrationTest {
     ok(HttpMethod.POST,"/sessions/"+id+"/complete",Map.of(),athlete.token(),HttpStatus.OK);
     assertThat(call(HttpMethod.PUT,"/hyrox/"+id,changed,athlete.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     assertThat(discover(viewer)).doesNotContain("Mon Hyrox");
+    assertThat(http.exchange("/api/v1/sessions",HttpMethod.GET,req(null,athlete.token()),String.class).getBody())
+      .contains("Mon Hyrox","\"published\":false");
     String post=ok(HttpMethod.POST,"/sessions/"+id+"/posts",Map.of("audience","PUBLIC"),athlete.token(),HttpStatus.CREATED).get("id").toString();
+    assertThat(http.exchange("/api/v1/sessions",HttpMethod.GET,req(null,athlete.token()),String.class).getBody())
+      .contains("Mon Hyrox","\"published\":true");
     for(String response:List.of(discover(viewer),call(HttpMethod.GET,"/posts/"+post,null,viewer.token()).getBody().toString())) {
       assertThat(response).contains("HYROX","SkiErg","distanceMeters","totalSeconds","700")
         .doesNotContain("Note strictement privée","clientId","startedAt","completedAt");

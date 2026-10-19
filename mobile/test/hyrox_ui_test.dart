@@ -6,9 +6,14 @@ import 'package:gym_bro/main.dart';
 class HyroxApi extends Api {
   final calls = <String>[];
   Map? submitted;
+  bool completed = false, published = false;
   @override Future<dynamic> call(String method, String path, [Object? body]) async {
     calls.add('$method $path');
-    if (path == '/feed' || path == '/sessions' || path == '/templates' || path == '/me/follow-requests') return <dynamic>[];
+    if (path == '/feed' || path == '/templates' || path == '/me/follow-requests') return <dynamic>[];
+    if (path == '/sessions' && method == 'GET') {
+      return completed ? [{'id': 'hyrox1', 'title': submitted!['title'],
+        'status': 'COMPLETED', 'started_at': '2026-10-19', 'published': published}] : <dynamic>[];
+    }
     if (path == '/feed/following') return {'items': [], 'nextCursor': null};
     if (path == '/me/summary') return {'handle': 'athlete', 'sessions': 0, 'publications': 0};
     if (path == '/me') return {'id': 'athlete', 'handle': 'athlete', 'private': false, 'unit': 'kg'};
@@ -19,6 +24,7 @@ class HyroxApi extends Api {
     }
     if (path == '/hyrox/hyrox1' && method == 'PUT') { return {'id': 'hyrox1', 'status': 'DRAFT'}; }
     if (path == '/sessions/hyrox1/complete') {
+      completed = true;
       return {'id': 'hyrox1', 'title': submitted!['title'],
         'status': 'COMPLETED', 'resultSchemaVersion': 3, 'workout': submitted, 'published': false};
     }
@@ -66,5 +72,12 @@ void main() {
     expect(api.calls, contains('POST /sessions/hyrox1/complete'));
     expect(api.calls.where((s) => s.endsWith('/posts')), isEmpty);
     expect(find.textContaining('Enregistrée dans votre historique privé'), findsOneWidget);
+    await tester.tap(find.text('Garder privée / Retour à l’accueil'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Terminée · 19/10/2026 · privée'), findsOneWidget);
+    api.published = true;
+    await tester.tap(find.byTooltip('Actualiser'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Terminée · 19/10/2026 · publiée'), findsOneWidget);
   });
 }

@@ -646,7 +646,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (history.isEmpty && !busy) gymCard(child: const Text('Aucune séance enregistrée sur ton compte. Commence par ton premier entraînement.')),
     for (final entry in history) gymCard(child: ListTile(
       title: Text('${entry['title']}'),
-      subtitle: Text('${entry['status'] == 'DRAFT' ? 'En cours' : 'Terminée'} · ${dateLabel(entry['started_at'])} · privée par défaut'),
+      subtitle: Text('${entry['status'] == 'DRAFT' ? 'En cours' : 'Terminée'} · ${dateLabel(entry['started_at'])} · ${entry['published'] == true ? 'publiée' : 'privée'}'),
       trailing: const Icon(Icons.chevron_right), onTap: () => openSession(entry as Map))),
   ]);
   Widget profileView() => ListView(padding: const EdgeInsets.all(16), children: [

@@ -297,7 +297,7 @@ public class GymBroApplication {
   @GetMapping("/sessions/{id}") public Map<String,Object> one(@PathVariable UUID id,HttpServletRequest request) { return session(id,actor(request)); }
   @GetMapping("/sessions") public List<Map<String,Object>> mine(HttpServletRequest request) {
     UUID owner=actor(request);
-    return db.queryForList("SELECT id,title,status,started_at,completed_at FROM workout_session WHERE owner_id=? ORDER BY started_at DESC LIMIT 50",owner);
+    return db.queryForList("SELECT s.id,s.title,s.status,s.started_at,s.completed_at,EXISTS(SELECT 1 FROM activity_post p WHERE p.session_id=s.id AND p.deleted_at IS NULL) AS published FROM workout_session s WHERE s.owner_id=? ORDER BY s.started_at DESC LIMIT 50",owner);
   }
   @PostMapping("/sessions/{id}/complete")
   public Map<String,Object> complete(@PathVariable UUID id,HttpServletRequest request) {
