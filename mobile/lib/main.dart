@@ -71,6 +71,79 @@ String exerciseSummary(Map post) {
   }).join('  •  ');
 }
 
+String _quantity(num value) => value == value.roundToDouble() ? '${value.toInt()}' : '$value';
+String _duration(Object? seconds) {
+  if (seconds is! num || seconds <= 0) return '—';
+  return seconds >= 60 && seconds % 60 == 0 ? '${seconds ~/ 60} min' : '$seconds s';
+}
+String _distance(num meters) => meters >= 1000 && meters % 1000 == 0
+    ? '${meters ~/ 1000} km' : '${_quantity(meters)} m';
+
+// Public projection only: never guess strength duration or mix weight units.
+List<(String, String)> activityMetrics(Map post) {
+  if (post['sport'] == 'CROSSFIT') {
+    final result = post['result'] as Map? ?? {};
+    return [
+      if (post['timeCapSeconds'] is num) (_duration(post['timeCapSeconds']), 'time cap'),
+      if (post['format'] == 'FOR_TIME' && result['timeSeconds'] is num)
+        (_duration(result['timeSeconds']), 'résultat')
+      else if (result['rounds'] is num && result['reps'] is num)
+        ('${result['rounds']} + ${result['reps']}', 'tours / reps'),
+      if (result['scaled'] is bool) (result['scaled'] == true ? 'Scaled' : 'RX', 'niveau'),
+    ];
+  }
+  if (post['sport'] == 'HYROX') {
+    final segments = post['segments'] as List? ?? [];
+    final runs = segments.whereType<Map>().where((s) => s['type'] == 'RUN');
+    final meters = runs.fold<num>(0, (sum, s) => sum + (s['distanceMeters'] is num ? s['distanceMeters'] as num : 0));
+    return [
+      if (post['totalSeconds'] is num) (_duration(post['totalSeconds']), 'temps total'),
+      if (meters > 0) (_distance(meters), 'course'),
+      ('${segments.whereType<Map>().where((s) => s['type'] == 'STATION').length}', 'stations'),
+    ];
+  }
+  final exercises = (post['exercises'] as List? ?? []).whereType<Map>();
+  var sets = 0;
+  num volume = 0;
+  String? unit;
+  var mixed = false;
+  for (final exercise in exercises) {
+    for (final entry in (exercise['sets'] as List? ?? []).whereType<Map>()) {
+      sets++;
+      if (entry['weight'] is num && entry['reps'] is num && entry['unit'] is String) {
+        final next = entry['unit'] as String;
+        if (unit != null && unit != next) mixed = true;
+        unit = next;
+        volume += (entry['weight'] as num) * (entry['reps'] as num);
+      } else { mixed = true; }
+    }
+  }
+  return [
+    if (post['exercises'] is List) ('${exercises.length}', 'exercices'),
+    if (sets > 0) ('$sets série${sets > 1 ? 's' : ''}', 'effectuées'),
+    if (sets > 0 && !mixed && unit != null) ('${_quantity(volume)} $unit', 'volume'),
+  ];
+}
+
+List<(String, String)> activityPreview(Map post) {
+  if (post['sport'] == 'STRENGTH') {
+    return (post['exercises'] as List? ?? []).whereType<Map>().take(2).map((exercise) {
+      final sets = (exercise['sets'] as List? ?? []).whereType<Map>();
+      final first = sets.isEmpty ? null : sets.first;
+      final detail = first == null ? '${sets.length} séries' :
+        '${first['weight']} ${first['unit']} · ${first['reps']} reps';
+      return ('${exercise['name']}', detail);
+    }).toList();
+  }
+  if (post['sport'] == 'CROSSFIT') {
+    return (post['movements'] as List? ?? []).take(2).map((m) => ('$m', 'mouvement')).toList();
+  }
+  return (post['segments'] as List? ?? []).whereType<Map>().take(2).map((segment) =>
+    (segment['type'] == 'RUN' ? 'Course' : '${segment['name']}',
+      segment['type'] == 'RUN' ? _distance(segment['distanceMeters'] is num ? segment['distanceMeters'] as num : 0) :
+      '${segment['reps'] ?? segment['durationSeconds'] ?? '—'} ${segment['reps'] != null ? 'reps' : 's'}')).toList();
+}
+
 Widget gymCard({required Widget child, EdgeInsets? padding}) => Card(
   elevation: 0, color: Colors.white, clipBehavior: Clip.antiAlias,
   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -673,42 +746,80 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       }
     } catch (_) { if (mounted) setState(() => error = 'Séance indisponible. Réessayez.'); }
   }
-  Widget postCard(Map post) => gymCard(child: InkWell(
-    onTap: () => openPost('${post['id']}'),
-    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [CircleAvatar(backgroundColor: lime, foregroundColor: ink,
-        child: Text('${post['author'] ?? '?'}'.substring(0, 1).toUpperCase())),
-        const SizedBox(width: 12), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+  Widget postCard(Map post) {
+    final id = '${post['id']}';
+    final metrics = activityMetrics(post);
+    final preview = activityPreview(post);
+    return gymCard(padding: EdgeInsets.zero, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Padding(padding: const EdgeInsets.fromLTRB(14, 14, 14, 8), child: Row(children: [
+        CircleAvatar(backgroundColor: lime, foregroundColor: ink, child: Text(
+          '${post['author'] ?? '?'}'.substring(0, 1).toUpperCase())),
+        const SizedBox(width: 10), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           InkWell(onTap: post['authorId'] == null ? null : () => openAthlete('${post['authorId']}'),
-            child: Text('@${post['author']} · Voir le profil', style: const TextStyle(fontWeight: FontWeight.w700, decoration: TextDecoration.underline))),
-          Text('${sportLabel(post['sport'])} · ${dateLabel(post['date'])}'),
-        ]))]),
-      const SizedBox(height: 16), Text('${post['title']}', style: Theme.of(context).textTheme.titleLarge),
-      if (isTechnicalPost(post)) const Text('Séance de test technique · compte jetable'),
-      const SizedBox(height: 8), Text(exerciseSummary(post)),
-      const SizedBox(height: 8), Text('${post['likeCount'] ?? 0} j’aime · ${post['commentCount'] ?? 0} commentaires'),
-      const SizedBox(height: 12), const Row(children: [Text('Voir la séance', style: TextStyle(fontWeight: FontWeight.w700)), SizedBox(width: 4), Icon(Icons.arrow_forward, size: 18)]),
-    ]),
-  ));
-  Widget feedView() => ListView(padding: const EdgeInsets.all(16), children: [
-    const Text('LE CLUB, SANS PRESSION', style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 1.5)),
-    const SizedBox(height: 8), Text('Bouge. Note. Partage.', style: Theme.of(context).textTheme.headlineLarge),
-    const SizedBox(height: 10), const Text('Tes séances restent privées. Tu choisis si tu veux les partager avec la communauté.'),
-    const SizedBox(height: 20), FilledButton.icon(onPressed: train, icon: const Icon(Icons.add), label: const Text('Commencer une séance')),
-    const SizedBox(height: 22), Wrap(spacing: 8, children: [
+            child: Padding(padding: const EdgeInsets.symmetric(vertical: 3), child: Text('@${post['author']}',
+              maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800,
+                decoration: TextDecoration.underline)))),
+          Text(dateLabel(post['date']), style: const TextStyle(color: Color(0xff50615c))),
+        ])),
+        const SizedBox(width: 6), Flexible(child: Text(sportLabel(post['sport']).toUpperCase(),
+          textAlign: TextAlign.end, style: const TextStyle(color: Color(0xff254844), fontSize: 11, fontWeight: FontWeight.w800))),
+      ])),
+      Padding(padding: const EdgeInsets.fromLTRB(14, 4, 14, 10), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        InkWell(onTap: () => openPost(id), child: Padding(padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Text('${post['title']}', style: Theme.of(context).textTheme.titleLarge))),
+        if (isTechnicalPost(post)) const Text('Séance de test technique · compte jetable'),
+        const SizedBox(height: 10),
+        if (metrics.isNotEmpty) Wrap(spacing: 6, runSpacing: 6, children: [for (final metric in metrics)
+          Container(constraints: const BoxConstraints(minWidth: 88), padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(color: canvas, borderRadius: BorderRadius.circular(10)),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+              Text(metric.$1, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+              Text(metric.$2, style: const TextStyle(color: Color(0xff50615c), fontSize: 12)),
+            ]))]),
+      ])),
+      if (preview.isNotEmpty) Container(width: double.infinity, color: const Color(0xffeef2e9),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9), child: Column(children: [
+          for (final row in preview) Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Row(children: [
+            const Icon(Icons.circle, size: 7, color: Color(0xff254844)), const SizedBox(width: 8),
+            Expanded(child: Text(row.$1, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700))),
+            const SizedBox(width: 5), Flexible(child: Text(row.$2, textAlign: TextAlign.end, maxLines: 2,
+              overflow: TextOverflow.ellipsis, style: const TextStyle(color: Color(0xff50615c)))),
+          ])),
+        ])),
+      Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: Wrap(spacing: 2, alignment: WrapAlignment.start, children: [
+        TextButton.icon(onPressed: () => openPost(id), icon: const Icon(Icons.favorite_border, size: 18),
+          label: Text(post['likeCount'] == null ? 'J’aime' : '${post['likeCount']} j’aime')),
+        TextButton.icon(onPressed: () => openPost(id), icon: const Icon(Icons.mode_comment_outlined, size: 18),
+          label: Text(post['commentCount'] == null ? 'Commenter' : '${post['commentCount']} commentaires')),
+        if (post['sport'] == 'STRENGTH') TextButton(onPressed: () => copyPost(id), child: const Text('Copier')),
+        TextButton(onPressed: () => openPost(id), child: const Text('Voir la séance')),
+      ])),
+    ]));
+  }
+  Widget feedView() => ListView(padding: const EdgeInsets.fromLTRB(12, 0, 12, 16), children: [
+    Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Wrap(spacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
       ChoiceChip(label: const Text('Découvrir'), selected: !subscriptions, onSelected: (_) => setState(() => subscriptions = false)),
       ChoiceChip(label: const Text('Abonnements'), selected: subscriptions, onSelected: (_) => setState(() => subscriptions = true)),
-    ]),
+    ])),
+    if (feed.isEmpty && followed.isEmpty && !busy) const Padding(padding: EdgeInsets.only(bottom: 6),
+      child: Text('Tes séances restent privées jusqu’à ce que tu choisisses de les publier.',
+        style: TextStyle(color: Color(0xff50615c)))),
+    if (!subscriptions && feed.isNotEmpty) const Padding(padding: EdgeInsets.fromLTRB(4, 4, 4, 2),
+      child: Text('ACTIVITÉS RÉCENTES', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.2))),
     if (subscriptions && followed.isEmpty && !busy) gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const Text('Aucune publication de tes abonnements. Trouve un athlète à suivre ou attends sa prochaine séance.'),
       TextButton(onPressed: searchAthlete, child: const Text('Rechercher un athlète'))])),
-    if (!subscriptions && feed.isEmpty && !busy) gymCard(child: const Text('Pas encore de séances publiques ici. Lance ta première séance ; elle restera privée jusqu’à ton choix de publier.')),
-    if (!subscriptions) TextButton(onPressed: searchAthlete, child: const Text('Rechercher un athlète')),
+    if (!subscriptions && feed.isEmpty && !busy) gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Text('Pas encore de séances publiques ici. Lance ta première séance ; elle restera privée jusqu’à ton choix de publier.'),
+      TextButton(onPressed: train, child: const Text('Commencer une séance'))])),
     for (final entry in (subscriptions ? followed : feed)) postCard(entry as Map),
+    if (!subscriptions) TextButton(onPressed: searchAthlete, child: const Text('Rechercher un athlète')),
     if (subscriptions ? followCursor != null : hasMore) OutlinedButton(onPressed: busy ? null : loadMore, child: const Text('Voir plus de séances')),
   ]);
   Widget historyView() => ListView(padding: const EdgeInsets.all(16), children: [
-    Text('Mes séances', style: Theme.of(context).textTheme.headlineLarge),
+    Text('Mes séances', style: Theme.of(context).textTheme.titleLarge),
+    const Text('En cours, terminées et privées jusqu’à ton choix de publier.',
+      style: TextStyle(color: Color(0xff50615c))),
     for (final kind in OfflineOutbox.kinds) if (outbox.read(kind) case final item?)
       gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('${item['body']['title']} · ${kind == 'strength' ? 'Musculation' : kind == 'wod' ? 'CrossFit' : 'Hyrox'}', style: Theme.of(context).textTheme.titleLarge),
@@ -758,8 +869,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       trailing: const Icon(Icons.chevron_right), onTap: () => openSession(entry as Map))),
   ]);
   Widget profileView() => ListView(padding: const EdgeInsets.all(16), children: [
-    Text('Mon espace', style: Theme.of(context).textTheme.headlineLarge),
-    const SizedBox(height: 16), gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    Text('Mon espace', style: Theme.of(context).textTheme.titleLarge),
+    const SizedBox(height: 8), gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       CircleAvatar(radius: 28, backgroundColor: lime, foregroundColor: ink,
         child: Text('${profile?['handle'] ?? '?'}'.substring(0, 1).toUpperCase())),
       const SizedBox(height: 12), Text('@${profile?['handle'] ?? '…'}', style: Theme.of(context).textTheme.titleLarge),
@@ -780,7 +891,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     OutlinedButton.icon(onPressed: widget.onLogout, icon: const Icon(Icons.logout), label: const Text('Se déconnecter')),
   ]);
   @override Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('GYM BRO', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 2)), actions: [IconButton(tooltip: 'Actualiser', onPressed: refresh, icon: const Icon(Icons.refresh))]),
+    appBar: AppBar(title: const Text('GYM BRO', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 1)), actions: [
+      if (tab == 0) TextButton.icon(onPressed: train, icon: const Icon(Icons.add), label: const Text('Séance'),
+        style: TextButton.styleFrom(backgroundColor: lime, foregroundColor: ink, minimumSize: const Size(90, 44))),
+      IconButton(tooltip: 'Actualiser', onPressed: refresh, icon: const Icon(Icons.refresh))]),
     body: Column(children: [
       if (busy) const LinearProgressIndicator(),
       if (error != null) Padding(padding: const EdgeInsets.all(12), child: Row(children: [Expanded(child: Text(error!, style: const TextStyle(color: Colors.red))), TextButton(onPressed: refresh, child: const Text('Réessayer'))])),
