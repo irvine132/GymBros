@@ -9,7 +9,11 @@ class OfflineOutbox {
   final SharedPreferences prefs;
   final Api api;
   final String owner;
-  OfflineOutbox(this.prefs, this.api, this.owner);
+  // Bind at construction, not at retry time: this owner must never borrow a
+  // bearer from another login on the shared API instance.
+  final int _sessionVersion;
+  OfflineOutbox(this.prefs, this.api, this.owner) : _sessionVersion = api.sessionVersion;
+  bool get sessionActive => api.sessionVersion == _sessionVersion;
 
   String _key(String kind) => 'outbox:v1:$owner:$kind';
   static const kinds = ['strength', 'wod', 'hyrox'];
@@ -74,11 +78,14 @@ class OfflineOutbox {
   Future<Map<String, dynamic>?> sync(String kind) async {
     var item = read(kind);
     if (item == null || item['state'] == 'synced') return item;
+    if (!sessionActive) return item;
     final body = Map<String, dynamic>.from(item['body'] as Map);
     item = {...item, 'state': 'syncing', 'error': null};
     await _write(kind, item);
     try {
+      if (!sessionActive) throw ApiUnauthorized();
       final remote = await api.call('POST', _paths[kind]!, body) as Map;
+      if (!sessionActive) throw ApiUnauthorized();
       if (remote['clientId'] != body['clientId'] ||
           jsonEncode(_normalized(remote['workout'])) != jsonEncode(_normalized(body))) {
         throw const _SyncConflict();
@@ -86,7 +93,9 @@ class OfflineOutbox {
       if (remote['status'] != 'DRAFT' && remote['status'] != 'COMPLETED') {
         throw const _SyncConflict();
       }
+      if (!sessionActive) throw ApiUnauthorized();
       final done = await api.call('POST', '/sessions/${remote['id']}/complete-expected', body) as Map;
+      if (!sessionActive) throw ApiUnauthorized();
       if (done['status'] != 'COMPLETED') throw const _SyncConflict();
       item = {...item, 'state': 'synced', 'session': done};
       await _write(kind, item);
@@ -103,9 +112,11 @@ class OfflineOutbox {
 
   Future<void> syncAll() async {
     for (final kind in kinds) {
+      if (!sessionActive) break;
       final item = read(kind);
       if (item != null && item['state'] != 'synced' && item['error'] == null) {
         await sync(kind);
+        if (read(kind)?['error'] == 'auth') break;
       }
     }
   }

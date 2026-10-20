@@ -180,7 +180,14 @@ class Api {
   final Duration timeout;
   Api({http.Client Function()? clientFactory, this.timeout = const Duration(seconds: 12)})
       : clientFactory = clientFactory ?? http.Client.new;
-  String? token;
+  String? _token;
+  int _sessionVersion = 0;
+  String? get token => _token;
+  int get sessionVersion => _sessionVersion;
+  set token(String? value) {
+    _token = value;
+    _sessionVersion++;
+  }
   Future<dynamic> call(String method, String path, [Object? body]) async {
     final uri = Uri.parse('$apiBase$path');
     final headers = <String, String>{'Content-Type': 'application/json', if (token != null) 'Authorization': 'Bearer $token'};
@@ -280,8 +287,12 @@ class _GymAppState extends State<GymApp> {
     setState(() {});
   }
   Future<void> logout() async {
-    try { await api.call('POST', '/auth/logout'); } finally {
-      api.token = null; userId = null;
+    // The request captures the old bearer synchronously; invalidate the shared
+    // API immediately so an in-flight outbox cannot continue under a new login.
+    final request = api.call('POST', '/auth/logout');
+    api.token = null;
+    try { await request; } finally {
+      userId = null;
       await store!.prefs.remove('token'); await store!.prefs.remove('userId');
       if (mounted) setState(() {});
     }
@@ -402,9 +413,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     syncing = true;
     try {
       for (final kind in OfflineOutbox.kinds) {
+        if (!outbox.sessionActive) break;
         final item = outbox.read(kind);
         if (item == null) continue;
         if (item['state'] != 'synced' && (retry || item['error'] == null)) await outbox.sync(kind);
+        if (!outbox.sessionActive) break;
         final updated = outbox.read(kind);
         if (updated?['state'] == 'synced') {
           final ids = {updated!['body']['clientId'], updated['priorClientId']};
@@ -414,7 +427,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         }
       }
     } catch (_) { if (mounted) setState(() => error = 'Synchronisation locale indisponible. Réessayez.'); }
-    finally { syncing = false; if (mounted) { setState(() {}); refresh(); } }
+    finally { syncing = false; if (mounted && outbox.sessionActive) { setState(() {}); refresh(); } }
   }
   Future<void> resolveConflict(String kind) async {
     final confirmed = await showDialog<bool>(context: context, builder: (dialog) => AlertDialog(

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gym_bro/main.dart';
 import 'package:gym_bro/offline_outbox.dart';
@@ -33,6 +35,17 @@ class OutboxApi extends Api {
       return remote;
     }
     throw StateError('Unexpected $method $path');
+  }
+}
+
+class SuspendedOutboxApi extends OutboxApi {
+  final firstResponse = Completer<dynamic>();
+  final requests = <String>[];
+  @override
+  Future<dynamic> call(String method, String path, [Object? body]) async {
+    requests.add('$path:${token ?? "none"}');
+    if (requests.length == 1) return firstResponse.future;
+    return super.call(method, path, body);
   }
 }
 
@@ -158,5 +171,55 @@ void main() {
     expect(outbox.read('strength')?['state'], 'synced');
     expect(api.created, 1);
     expect(api.completed, 2);
+  });
+  test('switching A to B during suspended response never sends A completion or next discipline with B', () async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final api = SuspendedOutboxApi()..online = true..token = 'A';
+    final outbox = OfflineOutbox(prefs, api, 'a');
+    await outbox.enqueue('strength', body);
+    await outbox.enqueue('wod', {...body, 'clientId': 'wod-stable'});
+    await outbox.enqueue('hyrox', {...body, 'clientId': 'hyrox-stable'});
+    final syncing = outbox.syncAll();
+    await Future<void>.delayed(Duration.zero);
+    api.token = null;
+    api.token = 'B';
+    api.firstResponse.complete({'id': 'one', 'clientId': body['clientId'],
+      'status': 'DRAFT', 'workout': body});
+    await syncing;
+    expect(api.requests, ['/sessions:A']);
+    expect(outbox.read('strength')?['body'], body);
+    expect(outbox.read('strength')?['state'], isNot('synced'));
+    expect(outbox.read('wod')?['state'], 'queued');
+    expect(outbox.read('hyrox')?['state'], 'queued');
+    expect(api.completed, 0);
+  });
+  test('expired A session retains pending disciplines without sending under B', () async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final api = OutboxApi()..online = true..unauthorized = true..token = 'A';
+    final outbox = OfflineOutbox(prefs, api, 'a');
+    for (final kind in OfflineOutbox.kinds) {
+      await outbox.enqueue(kind, {...body, 'clientId': '$kind-stable'});
+    }
+    await outbox.syncAll();
+    api.token = 'B';
+    await outbox.syncAll();
+    for (final kind in OfflineOutbox.kinds) {
+      expect(outbox.read(kind)?['body']['clientId'], '$kind-stable');
+      expect(outbox.read(kind)?['state'], isNot('synced'));
+    }
+    expect(api.created, 0);
+    // Re-authenticating as the original owner creates a new bound outbox;
+    // only an explicit retry sends the retained payload.
+    api.token = 'A-again';
+    api.unauthorized = false;
+    final resumed = OfflineOutbox(prefs, api, 'a');
+    for (final kind in OfflineOutbox.kinds) {
+      await resumed.sync(kind);
+      expect(resumed.read(kind)?['body']['clientId'], '$kind-stable');
+      expect(resumed.read(kind)?['state'], 'synced');
+      api.remote = null;
+    }
   });
 }
