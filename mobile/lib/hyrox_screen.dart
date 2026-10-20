@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import 'main.dart';
+import 'offline_outbox.dart';
 
 class HyroxScreen extends StatefulWidget {
   final Api api;
@@ -97,15 +98,17 @@ class _HyroxScreenState extends State<HyroxScreen> {
       await save();
       if (error != null) return;
       final body = validate();
-      final session = await widget.api.call('POST', '/hyrox', body) as Map;
-      if (session['status'] == 'DRAFT') await widget.api.call('PUT', '/hyrox/${session['id']}', body);
-      final done = await widget.api.call('POST', '/sessions/${session['id']}/complete') as Map;
+      final outbox = OfflineOutbox(widget.store.prefs, widget.api, widget.userId);
+      await outbox.enqueue('hyrox', body);
+      final result = await outbox.sync('hyrox');
+      if (result?['state'] != 'synced') { if (mounted) Navigator.pop(context); return; }
+      final done = result!['session'] as Map;
       await widget.store.clearHyrox(widget.userId);
       if (!mounted) return;
       await Navigator.push(context, MaterialPageRoute(builder: (_) => CompletedScreen(api: widget.api, session: done)));
       if (mounted) Navigator.pop(context);
     } on FormatException catch (e) { if (mounted) setState(() => error = e.message); }
-      catch (_) { if (mounted) setState(() => error = 'Séance non terminée. Vérifiez votre connexion et réessayez ; le brouillon est conservé.'); }
+      catch (_) { if (mounted) setState(() => error = 'Séance conservée. Terminez la synchronisation précédente avant de modifier cette séance.'); }
     finally { if (mounted) setState(() => busy = false); }
   }
   @override void dispose() {
@@ -133,7 +136,12 @@ class _HyroxScreenState extends State<HyroxScreen> {
       controller: s.duration, onChanged: (_) => save(), keyboardType: TextInputType.number,
       decoration: const InputDecoration(labelText: 'Durée du segment (secondes)')),
   ]));
-  @override Widget build(BuildContext context) => Scaffold(
+  @override Widget build(BuildContext context) {
+    final pending = OfflineOutbox(widget.store.prefs, widget.api, widget.userId).read('hyrox');
+    if (pending != null && pending['state'] != 'synced') { return Scaffold(appBar: AppBar(title: const Text('Séance Hyrox')),
+      body: Center(child: Padding(padding: const EdgeInsets.all(24), child: Text('Séance terminée en privé sur cet appareil. ${pending['error'] == 'conflict' ? 'Conflit : vos données sont conservées.' : 'Synchronisation en attente : revenez à Mes séances pour réessayer.'}'))));
+    }
+    return Scaffold(
     appBar: AppBar(title: const Text('Séance Hyrox')),
     body: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 500), child: ListView(
       padding: const EdgeInsets.all(20), children: [
@@ -159,4 +167,5 @@ class _HyroxScreenState extends State<HyroxScreen> {
       ],
     ))),
   );
+  }
 }

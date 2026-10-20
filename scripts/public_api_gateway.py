@@ -18,7 +18,7 @@ ROUTES = {
             r'/templates', rf'/templates/{UUID}',
             r'/users', rf'/users/{UUID}', rf'/users/{UUID}/posts', r'/sessions', rf'/sessions/{UUID}', rf'/posts/{UUID}'),
     'POST': (r'/auth/register', r'/auth/login', r'/auth/logout', r'/sessions', r'/wods', r'/hyrox',
-             rf'/sessions/{UUID}/complete', rf'/sessions/{UUID}/posts',
+             rf'/sessions/{UUID}/complete', rf'/sessions/{UUID}/complete-expected', rf'/sessions/{UUID}/posts',
              rf'/posts/{UUID}/reports', rf'/posts/{UUID}/copy', rf'/templates/{UUID}/sessions',
              rf'/users/{UUID}/block', rf'/users/{UUID}/follow',
              rf'/follow-requests/{UUID}/accept', rf'/follow-requests/{UUID}/reject'),

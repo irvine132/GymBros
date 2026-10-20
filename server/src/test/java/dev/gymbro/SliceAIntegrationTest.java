@@ -13,6 +13,37 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class SliceAIntegrationTest {
   @Autowired TestRestTemplate http;
+  @Test void offlineCompletionSupportsWodAndHyroxWithNullFields() {
+    String a = register("offw" + UUID.randomUUID().toString().substring(0, 8));
+    Map<String,Object> wod = Map.of("clientId",UUID.randomUUID().toString(),"title","Offline WOD","format","AMRAP",
+      "timeCapSeconds",720,"movements",List.of("Burpees"),"result",Map.of("rounds",5,"reps",2,"scaled",false));
+    Map<String,Object> hyrox = Map.of("clientId",UUID.randomUUID().toString(),"title","Offline Hyrox","totalSeconds",640,
+      "notes","only mine","segments",List.of(Map.of("type","RUN","distanceMeters",1000,"durationSeconds",330),
+        Map.of("type","STATION","name","SkiErg","durationSeconds",240)));
+    for (var pair : List.of(Map.entry("/wods",wod),Map.entry("/hyrox",hyrox))) {
+      String id=post("/api/v1"+pair.getKey(),pair.getValue(),a,HttpStatus.CREATED).get("id").toString();
+      String endpoint="/api/v1/sessions/"+id+"/complete-expected";
+      assertThat(post(endpoint,pair.getValue(),a,HttpStatus.OK).get("status")).isEqualTo("COMPLETED");
+      assertThat(post(endpoint,pair.getValue(),a,HttpStatus.OK).get("published")).isEqualTo(false);
+      assertThat(http.exchange(endpoint,HttpMethod.POST,request(Map.of("title","wrong"),a),String.class).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+    }
+  }
+  @Test void offlineCompletionRejectsConcurrentChangeAndOtherOwner() {
+    String suffix = UUID.randomUUID().toString().substring(0, 8);
+    String a = register("offa" + suffix), b = register("offb" + suffix);
+    Map<String,Object> workout = Map.of("clientId", UUID.randomUUID().toString(), "title", "Offline " + suffix,
+      "exercises", List.of(Map.of("name", "Squat", "sets", List.of(Map.of("reps", 5, "weight", 80, "unit", "kg")))));
+    String id = post("/api/v1/sessions", workout, a, HttpStatus.CREATED).get("id").toString();
+    String endpoint = "/api/v1/sessions/" + id + "/complete-expected";
+    assertThat(http.exchange(endpoint,HttpMethod.POST,request(workout,b),String.class).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    var changed = new java.util.HashMap<>(workout); changed.put("title", "Other device");
+    assertThat(http.exchange("/api/v1/sessions/" + id,HttpMethod.PUT,request(changed,a),String.class).getStatusCode()).isEqualTo(HttpStatus.OK);
+    assertThat(http.exchange(endpoint,HttpMethod.POST,request(workout,a),String.class).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+    assertThat(get("/api/v1/sessions/" + id,a).getBody().get("status")).isEqualTo("DRAFT");
+    post(endpoint,changed,a,HttpStatus.OK);
+    post(endpoint,changed,a,HttpStatus.OK);
+    assertThat(http.exchange(endpoint,HttpMethod.POST,request(workout,a),String.class).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+  }
   @Test void twoAccountsPrivateByDefaultAndBlock() {
     String suffix = UUID.randomUUID().toString().substring(0, 8);
     String a = register("alice" + suffix), b = register("bob" + suffix);

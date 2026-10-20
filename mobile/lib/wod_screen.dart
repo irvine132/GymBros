@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import 'main.dart';
+import 'offline_outbox.dart';
 
 class WodScreen extends StatefulWidget {
   final Api api;
@@ -64,22 +65,29 @@ class _WodScreenState extends State<WodScreen> {
       final body = {'clientId': clientId, 'title': title.text.trim(), 'format': format,
         'timeCapSeconds': seconds.toInt(), 'movements': moves,
         'result': format == 'FOR_TIME' ? {'timeSeconds': t, 'scaled': scaled} : {'rounds': r, 'reps': n, 'scaled': scaled}};
-      final session = await widget.api.call('POST', '/wods', body) as Map;
-      if (session['status'] == 'DRAFT') await widget.api.call('PUT', '/wods/${session['id']}', body);
-      final done = await widget.api.call('POST', '/sessions/${session['id']}/complete') as Map;
+      final outbox = OfflineOutbox(widget.store.prefs, widget.api, widget.userId);
+      await outbox.enqueue('wod', body);
+      final result = await outbox.sync('wod');
+      if (result?['state'] != 'synced') { if (mounted) Navigator.pop(context); return; }
+      final done = result!['session'] as Map;
       await widget.store.clearWod(widget.userId);
       if (!mounted) return;
       await Navigator.push(context, MaterialPageRoute(builder: (_) => CompletedScreen(api: widget.api, session: done)));
       if (mounted) Navigator.pop(context);
     } on FormatException catch (e) { if (mounted) setState(() => error = e.message); }
-      catch (_) { if (mounted) setState(() => error = 'WOD non terminé. Vérifiez votre connexion et réessayez ; le brouillon est conservé.'); }
+      catch (_) { if (mounted) setState(() => error = 'WOD conservé. Terminez la synchronisation précédente avant de modifier cette séance.'); }
     finally { if (mounted) setState(() => busy = false); }
   }
   @override void dispose() {
     for (final controller in [title, movements, cap, rounds, reps, time]) { controller.dispose(); }
     super.dispose();
   }
-  @override Widget build(BuildContext context) => Scaffold(
+  @override Widget build(BuildContext context) {
+    final pending = OfflineOutbox(widget.store.prefs, widget.api, widget.userId).read('wod');
+    if (pending != null && pending['state'] != 'synced') { return Scaffold(appBar: AppBar(title: const Text('WOD CrossFit')),
+      body: Center(child: Padding(padding: const EdgeInsets.all(24), child: Text('WOD terminé en privé sur cet appareil. ${pending['error'] == 'conflict' ? 'Conflit : vos données sont conservées.' : 'Synchronisation en attente : revenez à Mes séances pour réessayer.'}'))));
+    }
+    return Scaffold(
     appBar: AppBar(title: const Text('WOD CrossFit')),
     body: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 500), child: ListView(
       padding: const EdgeInsets.all(20), children: [
@@ -111,4 +119,5 @@ class _WodScreenState extends State<WodScreen> {
       ],
     ))),
   );
+  }
 }

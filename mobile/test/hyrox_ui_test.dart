@@ -23,7 +23,7 @@ class HyroxApi extends Api {
         'resultSchemaVersion': 3, 'status': 'DRAFT', 'workout': submitted, 'published': false};
     }
     if (path == '/hyrox/hyrox1' && method == 'PUT') { return {'id': 'hyrox1', 'status': 'DRAFT'}; }
-    if (path == '/sessions/hyrox1/complete') {
+    if (path == '/sessions/hyrox1/complete-expected') {
       completed = true;
       return {'id': 'hyrox1', 'title': submitted!['title'],
         'status': 'COMPLETED', 'resultSchemaVersion': 3, 'workout': submitted, 'published': false};
@@ -69,11 +69,13 @@ void main() {
     await tester.pumpAndSettle();
     expect(api.submitted!['totalSeconds'], 640);
     expect((api.submitted!['segments'] as List).map((s) => s['type']), ['RUN', 'STATION']);
-    expect(api.calls, contains('POST /sessions/hyrox1/complete'));
+    expect(api.calls, contains('POST /sessions/hyrox1/complete-expected'));
     expect(api.calls.where((s) => s.endsWith('/posts')), isEmpty);
     expect(find.textContaining('Enregistrée dans votre historique privé'), findsOneWidget);
     await tester.tap(find.text('Garder privée / Retour à l’accueil'));
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.textContaining('Terminée · 19/10/2026 · privée'), 200,
+      scrollable: find.descendant(of: find.byType(ListView).last, matching: find.byType(Scrollable)).first);
     expect(find.textContaining('Terminée · 19/10/2026 · privée'), findsOneWidget);
     api.published = true;
     await tester.tap(find.byTooltip('Actualiser'));

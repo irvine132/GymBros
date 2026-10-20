@@ -12,6 +12,7 @@ import 'native_diagnostic_io.dart'
 import 'template_screen.dart';
 import 'wod_screen.dart';
 import 'hyrox_screen.dart';
+import 'offline_outbox.dart';
 
 const apiBase = String.fromEnvironment('API_BASE', defaultValue: 'http://127.0.0.1:18081/api/v1');
 const diagnosticBuild = String.fromEnvironment('DIAGNOSTIC_BUILD', defaultValue: 'unknown');
@@ -134,32 +135,40 @@ class DraftStore {
   final SharedPreferences prefs;
   DraftStore(this.prefs);
   static Future<DraftStore> open() async => DraftStore(await SharedPreferences.getInstance());
+  Map<String, dynamic>? _readDraft(String key) {
+    final value = prefs.getString(key);
+    if (value == null) return null;
+    final decoded = jsonDecode(value) as Map<String,dynamic>;
+    if (!decoded.containsKey('snapshotVersion')) return decoded; // Existing drafts.
+    if (decoded['snapshotVersion'] != 1 || decoded['data'] is! Map) throw StateError('Unsupported draft version');
+    return Map<String,dynamic>.from(decoded['data'] as Map);
+  }
+  Future<void> _saveDraft(String key, Map<String,dynamic> data) async {
+    if (!await prefs.setString(key, jsonEncode({'snapshotVersion': 1, 'data': data}))) throw StateError('Draft not saved');
+  }
   Map<String, dynamic>? read(String user) {
-    final value = prefs.getString('draft:$user');
-    return value == null ? null : jsonDecode(value) as Map<String, dynamic>;
+    return _readDraft('draft:$user');
   }
   Future<void> save(String user, Map<String, dynamic> data) async {
-    if (!await prefs.setString('draft:$user', jsonEncode(data))) throw StateError('Draft not saved');
+    await _saveDraft('draft:$user', data);
   }
   Future<void> clear(String user) async {
     if (!await prefs.remove('draft:$user')) throw StateError('Draft not cleared');
   }
   Map<String, dynamic>? readWod(String user) {
-    final value = prefs.getString('wod:$user');
-    return value == null ? null : jsonDecode(value) as Map<String, dynamic>;
+    return _readDraft('wod:$user');
   }
   Future<void> saveWod(String user, Map<String,dynamic> data) async {
-    if (!await prefs.setString('wod:$user', jsonEncode(data))) throw StateError('WOD draft not saved');
+    await _saveDraft('wod:$user', data);
   }
   Future<void> clearWod(String user) async {
     if (!await prefs.remove('wod:$user')) throw StateError('WOD draft not cleared');
   }
   Map<String, dynamic>? readHyrox(String user) {
-    final value = prefs.getString('hyrox:$user');
-    return value == null ? null : jsonDecode(value) as Map<String, dynamic>;
+    return _readDraft('hyrox:$user');
   }
   Future<void> saveHyrox(String user, Map<String,dynamic> data) async {
-    if (!await prefs.setString('hyrox:$user', jsonEncode(data))) throw StateError('Hyrox draft not saved');
+    await _saveDraft('hyrox:$user', data);
   }
   Future<void> clearHyrox(String user) async {
     if (!await prefs.remove('hyrox:$user')) throw StateError('Hyrox draft not cleared');
@@ -372,7 +381,7 @@ class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.api, required this.userId, required this.store, required this.onLogout});
   @override State<HomeScreen> createState() => _HomeScreenState();
 }
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   int tab = 0;
   List<dynamic> feed = [], history = [], templates = [];
   List<dynamic> followed = [], requests = [];
@@ -381,7 +390,65 @@ class _HomeScreenState extends State<HomeScreen> {
   bool subscriptions = false, hasMore = false;
   String? error;
   bool busy = false;
-  @override void initState() { super.initState(); refresh(); }
+  late final OfflineOutbox outbox = OfflineOutbox(widget.store.prefs, widget.api, widget.userId);
+  bool syncing = false;
+  @override void initState() { super.initState(); WidgetsBinding.instance.addObserver(this); syncPending(); }
+  @override void dispose() { WidgetsBinding.instance.removeObserver(this); super.dispose(); }
+  @override void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) syncPending();
+  }
+  Future<void> syncPending({bool retry = false}) async {
+    if (syncing) return;
+    syncing = true;
+    try {
+      for (final kind in OfflineOutbox.kinds) {
+        final item = outbox.read(kind);
+        if (item == null) continue;
+        if (item['state'] != 'synced' && (retry || item['error'] == null)) await outbox.sync(kind);
+        final updated = outbox.read(kind);
+        if (updated?['state'] == 'synced') {
+          final ids = {updated!['body']['clientId'], updated['priorClientId']};
+          if (kind == 'strength' && ids.contains(widget.store.read(widget.userId)?['clientId'])) await widget.store.clear(widget.userId);
+          if (kind == 'wod' && ids.contains(widget.store.readWod(widget.userId)?['clientId'])) await widget.store.clearWod(widget.userId);
+          if (kind == 'hyrox' && ids.contains(widget.store.readHyrox(widget.userId)?['clientId'])) await widget.store.clearHyrox(widget.userId);
+        }
+      }
+    } catch (_) { if (mounted) setState(() => error = 'Synchronisation locale indisponible. Réessayez.'); }
+    finally { syncing = false; if (mounted) { setState(() {}); refresh(); } }
+  }
+  Future<void> resolveConflict(String kind) async {
+    final confirmed = await showDialog<bool>(context: context, builder: (dialog) => AlertDialog(
+      title: const Text('Créer une séance distincte ?'),
+      content: const Text('La séance modifiée sur l’autre appareil ne sera pas écrasée. Une nouvelle séance privée sera créée avec la copie locale conservée ici.'),
+      actions: [TextButton(onPressed: () => Navigator.pop(dialog, false), child: const Text('Annuler')),
+        FilledButton(onPressed: () => Navigator.pop(dialog, true), child: const Text('Créer une copie privée'))],
+    ));
+    if (confirmed != true) return;
+    try { await outbox.forkConflict(kind, const Uuid().v4()); await syncPending(retry: true); }
+    catch (_) { if (mounted) setState(() => error = 'Copie non créée. Les données locales sont conservées.'); }
+  }
+  Future<void> editRejected(String kind) async {
+    try {
+      final draft = kind == 'strength' ? widget.store.read(widget.userId) :
+        kind == 'wod' ? widget.store.readWod(widget.userId) : widget.store.readHyrox(widget.userId);
+      if (draft == null || draft['clientId'] != outbox.read(kind)?['body']['clientId']) {
+        throw StateError('Local draft missing');
+      }
+      await outbox.reopenRejected(kind);
+      if (!mounted) return;
+      if (kind == 'strength') { await train(); }
+      if (kind == 'wod') { await trainWod(); }
+      if (kind == 'hyrox') { await trainHyrox(); }
+    } catch (_) { if (mounted) setState(() => error = 'Brouillon conservé. Impossible de rouvrir cette séance.'); }
+  }
+  Future<void> openSynced(Map session) async {
+    try {
+      final latest = await widget.api.call('GET', '/sessions/${session['id']}') as Map;
+      if (!mounted) return;
+      await Navigator.push(context, MaterialPageRoute(builder: (_) => CompletedScreen(api: widget.api, session: latest)));
+      if (mounted) refresh();
+    } catch (_) { if (mounted) setState(() => error = 'Résumé indisponible. Reconnectez-vous et réessayez.'); }
+  }
   Future<void> refresh() async {
     setState(() { busy = true; error = null; feed = []; followed = []; followCursor = null; });
     try {
@@ -539,6 +606,11 @@ class _HomeScreenState extends State<HomeScreen> {
       final item = await widget.api.call('GET', '/sessions/${session['id']}') as Map;
       if (!mounted) return;
       if (item['status'] == 'DRAFT') {
+        final kind = item['resultSchemaVersion'] == 3 ? 'hyrox' : item['resultSchemaVersion'] == 2 ? 'wod' : 'strength';
+        if (outbox.read(kind)?['state'] != null && outbox.read(kind)?['state'] != 'synced') {
+          setState(() => error = 'Une séance terminée localement attend sa synchronisation. Résolvez-la dans Mes séances avant de reprendre ce brouillon distant.');
+          return;
+        }
         if (item['resultSchemaVersion'] == 3) {
           final local = widget.store.readHyrox(widget.userId);
           if (local != null && local['clientId'] != item['clientId']) {
@@ -619,6 +691,24 @@ class _HomeScreenState extends State<HomeScreen> {
   ]);
   Widget historyView() => ListView(padding: const EdgeInsets.all(16), children: [
     Text('Mes séances', style: Theme.of(context).textTheme.headlineLarge),
+    for (final kind in OfflineOutbox.kinds) if (outbox.read(kind) case final item?)
+      gymCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('${item['body']['title']} · ${kind == 'strength' ? 'Musculation' : kind == 'wod' ? 'CrossFit' : 'Hyrox'}', style: Theme.of(context).textTheme.titleLarge),
+        Text(item['state'] == 'synced' ? 'Synchronisée · privée (sauf publication volontaire)' :
+          item['error'] == 'conflict' ? 'Conflit avec une autre modification : données locales conservées. Résolution nécessaire.' :
+          item['error'] == 'auth' ? 'Session expirée : reconnectez-vous pour synchroniser.' :
+          item['error'] == 'validation' ? 'Validation refusée : corrigez votre brouillon local.' :
+          item['error'] == 'server' ? 'Erreur serveur : données locales conservées.' :
+          'Terminée sur cet appareil · privée · en attente de synchronisation'),
+        if (item['state'] != 'synced' && item['error'] != 'conflict' && item['error'] != 'validation')
+          TextButton(onPressed: syncing ? null : () => syncPending(retry: true), child: const Text('Réessayer la synchronisation')),
+        if (item['error'] == 'validation') TextButton(onPressed: () => editRejected(kind), child: const Text('Corriger mon brouillon')),
+        if (item['error'] == 'conflict') TextButton(onPressed: syncing ? null : () => resolveConflict(kind),
+          child: const Text('Créer une copie privée séparée')),
+        if (item['state'] == 'synced' && item['session'] != null)
+          TextButton(onPressed: () => openSynced(item['session'] as Map),
+            child: const Text('Voir le résumé et choisir de publier')),
+      ])),
     const SizedBox(height: 12), FilledButton.icon(onPressed: trainWod, icon: const Icon(Icons.timer_outlined),
       label: Text(widget.store.readWod(widget.userId) == null ? 'Créer un WOD CrossFit' : 'Reprendre mon WOD')),
     const SizedBox(height: 8), OutlinedButton.icon(onPressed: trainHyrox, icon: const Icon(Icons.route_outlined),
@@ -643,7 +733,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (widget.store.readHyrox(widget.userId) != null) gymCard(child: ListTile(
       leading: const Icon(Icons.route_outlined), title: const Text('Brouillon Hyrox sur cet appareil'),
       subtitle: const Text('Privé · reprends tes courses et tes stations'), onTap: trainHyrox)),
-    if (history.isEmpty && !busy) gymCard(child: const Text('Aucune séance enregistrée sur ton compte. Commence par ton premier entraînement.')),
+    if (history.isEmpty && !busy && OfflineOutbox.kinds.every((kind) => outbox.read(kind) == null)) gymCard(child: const Text('Aucune séance enregistrée sur ton compte. Commence par ton premier entraînement.')),
     for (final entry in history) gymCard(child: ListTile(
       title: Text('${entry['title']}'),
       subtitle: Text('${entry['status'] == 'DRAFT' ? 'En cours' : 'Terminée'} · ${dateLabel(entry['started_at'])} · ${entry['published'] == true ? 'publiée' : 'privée'}'),
@@ -876,17 +966,20 @@ class _WorkoutScreenState extends State<WorkoutScreen> {
         exercises.add({'name': name.trim(), 'sets': results});
       }
       final payload = {'clientId': clientId, 'title': title.text.trim(), 'exercises': exercises};
-      final session = await widget.api.call('POST', '/sessions', payload) as Map;
-      final id = session['id'];
-      // A stable clientId makes a retry safe if the response was lost.
-      if (session['status'] == 'DRAFT') await widget.api.call('PUT', '/sessions/$id', payload);
-      final done = await widget.api.call('POST', '/sessions/$id/complete') as Map;
+      final outbox = OfflineOutbox(widget.store.prefs, widget.api, widget.userId);
+      await outbox.enqueue('strength', payload);
+      final result = await outbox.sync('strength');
+      if (result?['state'] != 'synced') {
+        if (mounted) Navigator.pop(context);
+        return;
+      }
+      final done = result!['session'] as Map;
       await widget.store.clear(widget.userId);
       if (!mounted) return;
       await Navigator.push(context, MaterialPageRoute(builder: (_) => CompletedScreen(api: widget.api, session: done)));
       if (mounted) Navigator.pop(context);
     } on FormatException catch (e) { if (mounted) setState(() => error = e.message); }
-      catch (_) { if (mounted) setState(() => error = 'Séance non terminée. Vérifiez votre connexion et réessayez ; votre brouillon est conservé.'); }
+      catch (_) { if (mounted) setState(() => error = 'Séance conservée sur cet appareil. Terminez la synchronisation précédente avant de modifier cette séance.'); }
     finally { if (mounted) setState(() => busy = false); }
   }
   @override void dispose() { title.dispose(); exercise.dispose(); for (final set in sets) { set.dispose(); } for (final item in moreExercises) { item.dispose(); } super.dispose(); }
@@ -914,7 +1007,12 @@ class _WorkoutScreenState extends State<WorkoutScreen> {
       icon: const Icon(Icons.add), label: const Text('Ajouter une série')),
     const SizedBox(height: 20),
   ]);
-  @override Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: const Text('Séance musculation')),
+  @override Widget build(BuildContext context) {
+    final pending = OfflineOutbox(widget.store.prefs, widget.api, widget.userId).read('strength');
+    if (pending != null && pending['state'] != 'synced') { return Scaffold(appBar: AppBar(title: const Text('Séance musculation')),
+      body: Center(child: Padding(padding: const EdgeInsets.all(24), child: Text('Séance terminée en privé sur cet appareil. ${pending['error'] == 'conflict' ? 'Conflit : vos données sont conservées.' : 'Synchronisation en attente : revenez à Mes séances pour réessayer.'}'))));
+    }
+    return Scaffold(appBar: AppBar(title: const Text('Séance musculation')),
     body: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 500), child: ListView(padding: const EdgeInsets.all(20), children: [
       Text('À ton rythme.', style: Theme.of(context).textTheme.headlineLarge),
       const SizedBox(height: 8), const Text('Chaque série se coche en un geste. Quitte l’écran quand tu veux : le brouillon reste sur cet appareil, privé.'),
@@ -934,6 +1032,7 @@ class _WorkoutScreenState extends State<WorkoutScreen> {
       FilledButton(onPressed: busy ? null : finish, child: const Text('Terminer en privé')),
     ]))),
   );
+  }
 }
 
 class CompletedScreen extends StatefulWidget {

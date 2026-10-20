@@ -26,13 +26,14 @@ class PreviewApi extends Api {
        'started_at': '2026-10-19', 'published': published}]; }
     if ((path == '/sessions' || path == '/wods' || path == '/hyrox') && method == 'POST') {
       if (!completed) workout = body as Map;
-      return {'id': 'demo-session', 'status': completed ? 'COMPLETED' : 'DRAFT'};
+      return {'id': 'demo-session', 'clientId':workout?['clientId'], 'workout':workout,
+        'status': completed ? 'COMPLETED' : 'DRAFT'};
     }
     if (path == '/sessions/demo-session' && method == 'PUT') { workout = body as Map; return {}; }
     if (path == '/wods/demo-session' && method == 'PUT') { workout = body as Map; return {}; }
     if (path == '/hyrox/demo-session' && method == 'PUT') { workout = body as Map; return {}; }
-    if (path == '/sessions/demo-session/complete' || path == '/sessions/demo-session') {
-      if (path.endsWith('/complete')) completed = true;
+    if (path == '/sessions/demo-session/complete' || path == '/sessions/demo-session/complete-expected' || path == '/sessions/demo-session') {
+      if (path.endsWith('/complete') || path.endsWith('/complete-expected')) completed = true;
       return {'id': 'demo-session', 'title': workout?['title'] ?? 'Force du lundi', 'status': completed ? 'COMPLETED' : 'DRAFT',
         'workout': workout, 'resultSchemaVersion': workout?['segments'] != null ? 3 : workout?['format'] == null ? 1 : 2, 'published': published};
     }

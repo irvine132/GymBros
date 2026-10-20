@@ -306,6 +306,20 @@ public class GymBroApplication {
     if(changed==0 && db.queryForObject("SELECT count(*) FROM workout_session WHERE id=? AND owner_id=?",Integer.class,id,owner)==0) throw error(HttpStatus.NOT_FOUND);
     return session(id,owner);
   }
+  // Conditional offline completion never commits a different device's draft.
+  @PostMapping("/sessions/{id}/complete-expected") @Transactional
+  public Map<String,Object> completeExpected(@PathVariable UUID id,@RequestBody com.fasterxml.jackson.databind.JsonNode expected,HttpServletRequest request) {
+    UUID owner=actor(request);
+    if(expected==null || !expected.isObject()) throw error(HttpStatus.BAD_REQUEST);
+    int changed=db.update("UPDATE workout_session SET status='COMPLETED',completed_at=now() WHERE id=? AND owner_id=? AND status='DRAFT' AND jsonb_strip_nulls(payload)=jsonb_strip_nulls(?::jsonb)",
+      id,owner,expected.toString());
+    if(changed==0) {
+      List<Map<String,Object>> rows=db.queryForList("SELECT status,jsonb_strip_nulls(payload)=jsonb_strip_nulls(?::jsonb) AS matches FROM workout_session WHERE id=? AND owner_id=?",expected.toString(),id,owner);
+      if(rows.isEmpty()) throw error(HttpStatus.NOT_FOUND);
+      if(!"COMPLETED".equals(rows.getFirst().get("status")) || !Boolean.TRUE.equals(rows.getFirst().get("matches"))) throw error(HttpStatus.CONFLICT);
+    }
+    return session(id,owner);
+  }
   @PostMapping("/sessions/{id}/posts") @Transactional
   public ResponseEntity<?> publish(@PathVariable UUID id,@RequestBody(required=false) Publication in,HttpServletRequest request) {
     String audience=in==null || in.audience()==null?"PUBLIC":in.audience();

@@ -21,9 +21,9 @@ class FakeApi extends Api {
     if (path == '/exercises') return [{'name': 'Squat', 'category': 'Jambes', 'unit': 'kg'}, {'name': 'Tractions', 'category': 'Dos', 'unit': 'kg'}];
     if (path == '/feed') return (published || other) && !blocked ? [{'id': 'post-1', 'title': 'Leg day', 'author': 'alice', 'sport': 'STRENGTH', 'date': '2026-10-17'}] : [];
     if (path == '/sessions' && method == 'GET') return [];
-    if (path == '/sessions' && method == 'POST') { sessions++; workout = body as Map; return {'id': 'session-1', 'status': 'DRAFT'}; }
+    if (path == '/sessions' && method == 'POST') { sessions++; workout = body as Map; return {'id': 'session-1', 'clientId': workout!['clientId'], 'status': 'DRAFT', 'workout': workout}; }
     if (path == '/sessions/session-1' && method == 'PUT') return {};
-    if (path == '/sessions/session-1/complete') return {'id': 'session-1', 'title': 'Leg day', 'status': 'COMPLETED', 'workout': workout};
+    if (path == '/sessions/session-1/complete-expected') return {'id': 'session-1', 'title': 'Leg day', 'status': 'COMPLETED', 'workout': workout};
     if (path == '/sessions/session-1/posts') { published = true; return {'id': 'post-1'}; }
     if (path == '/posts/post-1') return {'id': 'post-1', 'title': 'Leg day', 'author': 'alice', if (other) 'authorId': 'alice-id', 'sport': 'STRENGTH', 'exerciseCount': 1, 'date': '2026-10-17'};
     if (path == '/posts/post-1/reports') { reported = true; return {'id': 'report-1'}; }

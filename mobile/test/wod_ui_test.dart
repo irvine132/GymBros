@@ -6,8 +6,10 @@ import 'package:gym_bro/main.dart';
 class WodApi extends Api {
   final calls = <String>[];
   Map? submitted;
+  bool online = true;
   @override Future<dynamic> call(String method, String path, [Object? body]) async {
     calls.add('$method $path');
+    if (!online && method == 'POST') throw StateError('offline');
     if (path == '/feed' || path == '/sessions' || path == '/templates' || path == '/me/follow-requests') return <dynamic>[];
     if (path == '/feed/following') return {'items': [], 'nextCursor': null};
     if (path == '/me/summary') return {'handle': 'athlete', 'sessions': 0, 'publications': 0};
@@ -18,7 +20,7 @@ class WodApi extends Api {
         'status': 'DRAFT', 'workout': submitted, 'published': false};
     }
     if (path == '/wods/wod1' && method == 'PUT') { return {'id': 'wod1', 'status': 'DRAFT'}; }
-    if (path == '/sessions/wod1/complete') {
+    if (path == '/sessions/wod1/complete-expected') {
       return {'id': 'wod1', 'title': submitted!['title'], 'status': 'COMPLETED',
         'resultSchemaVersion': 2, 'workout': submitted, 'published': false};
     }
@@ -54,7 +56,44 @@ void main() {
     await tester.pumpAndSettle();
     expect(api.submitted!['format'], 'AMRAP');
     expect(api.submitted!['result'], {'rounds': 5, 'reps': 7, 'scaled': false});
-    expect(api.calls, contains('POST /sessions/wod1/complete'));
+    expect(api.calls, contains('POST /sessions/wod1/complete-expected'));
     expect(find.textContaining('Enregistrée dans votre historique privé'), findsOneWidget);
+  });
+  testWidgets('WOD completes offline, survives reopen and syncs privately on retry', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    SharedPreferences.setMockInitialValues({});
+    final api = WodApi()..online = false;
+    final store = await DraftStore.open();
+    await tester.pumpWidget(MaterialApp(home: HomeScreen(api: api, store: store, userId: 'athlete', onLogout: () async {})));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Entraînement'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Créer un WOD CrossFit'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('wod-title')), 'Offline WOD');
+    await tester.enterText(find.byKey(const Key('wod-movements')), 'Burpees');
+    await tester.enterText(find.byKey(const Key('wod-rounds')), '2');
+    await tester.enterText(find.byKey(const Key('wod-reps')), '3');
+    final scroll = find.descendant(of: find.byType(ListView).last, matching: find.byType(Scrollable)).first;
+    await tester.scrollUntilVisible(find.text('Terminer en privé'), 280, scrollable: scroll);
+    await tester.tap(find.text('Terminer en privé'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('attente de synchronisation'), findsWidgets);
+    expect(store.readWod('athlete')?['title'], 'Offline WOD');
+    await tester.pumpWidget(const SizedBox());
+    final reopened = DraftStore(await SharedPreferences.getInstance());
+    await tester.pumpWidget(MaterialApp(home: HomeScreen(api: api, store: reopened, userId: 'athlete', onLogout: () async {})));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Entraînement'));
+    await tester.pumpAndSettle();
+    api.online = true;
+    await tester.tap(find.text('Réessayer la synchronisation'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Synchronisée · privée'), findsOneWidget);
+    expect(reopened.readWod('athlete'), isNull);
+    expect(api.calls.where((call) => call == 'POST /wods').length, 2);
+    expect(api.calls.where((call) => call == 'POST /sessions/wod1/complete-expected').length, 1);
+    expect(api.calls.where((call) => call.endsWith('/posts')), isEmpty);
   });
 }

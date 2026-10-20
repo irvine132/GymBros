@@ -65,3 +65,7 @@ Voir `docs/decisions/ADR-005-crossfit-wod-results.md`. Même bearer, propriétai
 | GET/POST | `/sessions/{id}`, `/sessions/{id}/complete`, `/sessions/{id}/posts` | réutilisent détail privé, fin privée et publication volontaire existants ; aucune conversion implicite |
 
 Projection publique WOD uniquement `{id,authorId,author,title,date,sport:"CROSSFIT",format,timeCapSeconds,movements,result}` avec `result` limité à rounds/reps/timeSeconds/scaled. Le time cap est un objectif d'effort, pas un horaire de début. Pas de session brute, `clientId` ni heures précises. `/posts/{id}/copy` refuse les WOD avec 400 (copie version 1 STRENGTH seulement), après contrôle de visibilité ; aucun bouton Copier affiché pour un WOD.
+
+## Tranche D3 — fin locale privée conditionnelle
+
+`POST /sessions/{id}/complete-expected` accepte le payload sportif privé exact soumis à la création (`Workout`, `Wod` ou `Hyrox` comme JSON). Bearer requis, propriétaire seul : 404 si absent ou tiers, 409 si payload différent du brouillon distant ou d'une séance déjà terminée, 200 si brouillon identique terminé ou si même fin rejouée. Comparaison JSONB sans champs null ; `clientId` reste stable. Ce chemin ne crée jamais de publication. Il ne remplace pas les anciens clients utilisant `/complete` sans garde ; voir `docs/decisions/ADR-007-offline-completion-outbox.md`. La passerelle n'autorise que POST avec UUID au bon chemin et corps ≤64 Kio, pas de route administrative.
