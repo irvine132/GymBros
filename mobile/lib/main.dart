@@ -526,6 +526,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ],
           if (post['sourceAuthor'] != null) Text('Inspiré de @${post['sourceAuthor']}'),
           if (post['sourceUnavailable'] == true) const Text('Source non disponible'),
+          const SizedBox(height: 16),
+          PostInteractionPanel(api: widget.api, postId: id, userId: widget.userId,
+            initial: post, onChanged: () {}),
         ])),
         actions: [
           if (post['sport'] == 'STRENGTH') TextButton(onPressed: () { Navigator.pop(context); copyPost(id); }, child: const Text('Copier et essayer')),
@@ -542,6 +545,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Fermer')),
         ],
       ));
+      if (mounted) refresh();
     } catch (e) { if (mounted) setState(() => error = '$e'); }
   }
   Future<void> reportPost(String id) async {
@@ -682,6 +686,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       const SizedBox(height: 16), Text('${post['title']}', style: Theme.of(context).textTheme.titleLarge),
       if (isTechnicalPost(post)) const Text('Séance de test technique · compte jetable'),
       const SizedBox(height: 8), Text(exerciseSummary(post)),
+      const SizedBox(height: 8), Text('${post['likeCount'] ?? 0} j’aime · ${post['commentCount'] ?? 0} commentaires'),
       const SizedBox(height: 12), const Row(children: [Text('Voir la séance', style: TextStyle(fontWeight: FontWeight.w700)), SizedBox(width: 4), Icon(Icons.arrow_forward, size: 18)]),
     ]),
   ));
@@ -784,6 +789,102 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     floatingActionButton: tab == 0 ? null : FloatingActionButton.extended(onPressed: train, icon: const Icon(Icons.fitness_center), label: Text(widget.store.read(widget.userId) == null ? 'Nouvelle séance' : 'Reprendre')),
     bottomNavigationBar: NavigationBar(selectedIndex: tab, onDestinationSelected: (i) { setState(() => tab = i); if (i == 1) loadTemplates(); }, destinations: const [NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Accueil'), NavigationDestination(icon: Icon(Icons.fitness_center_outlined), label: 'Entraînement'), NavigationDestination(icon: Icon(Icons.person_outline), label: 'Profil')]),
   );
+}
+
+class PostInteractionPanel extends StatefulWidget {
+  final Api api;
+  final String postId, userId;
+  final Map initial;
+  final VoidCallback onChanged;
+  const PostInteractionPanel({super.key, required this.api, required this.postId,
+    required this.userId, required this.initial, required this.onChanged});
+  @override State<PostInteractionPanel> createState() => _PostInteractionPanelState();
+}
+
+class _PostInteractionPanelState extends State<PostInteractionPanel> {
+  late Map post = widget.initial;
+  final text = TextEditingController();
+  List<dynamic> comments = [];
+  String? cursor, error, pendingCommentId;
+  bool busy = false, loaded = false;
+  @override void initState() { super.initState(); load(reset: true); }
+  @override void dispose() { text.dispose(); super.dispose(); }
+  Future<void> load({bool reset = false, bool preserveError = false}) async {
+    if (busy) return;
+    setState(() { busy = true; if (!preserveError) { error = null; } });
+    try {
+      final path = '/posts/${widget.postId}/comments${reset || cursor == null ? '' : '?cursor=$cursor'}';
+      final page = await widget.api.call('GET', path) as Map;
+      if (mounted) {
+        setState(() {
+          if (reset) { comments = []; }
+          comments.addAll(page['items'] as List);
+          cursor = page['nextCursor'] as String?;
+          loaded = true;
+        });
+      }
+    } catch (_) { if (mounted) setState(() => error = 'Commentaires indisponibles ou accès retiré. Réessayez.'); }
+    finally { if (mounted) setState(() => busy = false); }
+  }
+  Future<void> toggleLike() async {
+    if (busy) return;
+    setState(() { busy = true; error = null; });
+    try {
+      final updated = await widget.api.call(post['likedByMe'] == true ? 'DELETE' : 'POST', '/posts/${widget.postId}/likes',
+        post['likedByMe'] == true ? null : {}) as Map;
+      if (mounted) { setState(() => post = updated); widget.onChanged(); }
+    } catch (_) { if (mounted) setState(() => error = 'Réaction non confirmée. Vérifiez votre connexion et réessayez.'); }
+    finally { if (mounted) setState(() => busy = false); }
+  }
+  Future<void> submit() async {
+    if (busy) return;
+    final value = text.text.trim();
+    if (value.isEmpty || value.length > 500) { setState(() => error = 'Écrivez un commentaire de 1 à 500 caractères.'); return; }
+    setState(() { busy = true; error = null; });
+    try {
+      pendingCommentId ??= const Uuid().v4();
+      await widget.api.call('POST', '/posts/${widget.postId}/comments', {'clientId': pendingCommentId, 'text': value});
+      pendingCommentId = null;
+      if (mounted) { text.clear(); widget.onChanged(); }
+      final updated = await widget.api.call('GET', '/posts/${widget.postId}') as Map;
+      if (mounted) { setState(() => post = updated); }
+    } catch (_) { if (mounted) setState(() => error = 'Envoi non confirmé ou rafraîchissement impossible. Actualisez avant de réessayer.'); }
+    finally { if (mounted) setState(() => busy = false); }
+    if (mounted) await load(reset: true, preserveError: error != null);
+  }
+  Future<void> remove(String id) async {
+    if (busy) return;
+    setState(() { busy = true; error = null; });
+    try {
+      await widget.api.call('DELETE', '/posts/${widget.postId}/comments/$id');
+      final updated = await widget.api.call('GET', '/posts/${widget.postId}') as Map;
+      if (mounted) { setState(() => post = updated); widget.onChanged(); }
+    } catch (_) { if (mounted) setState(() => error = 'Suppression non confirmée. Actualisez et réessayez.'); }
+    finally { if (mounted) setState(() => busy = false); }
+    if (mounted) await load(reset: true, preserveError: error != null);
+  }
+  @override Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    Text('${post['likeCount'] ?? 0} j’aime · ${post['commentCount'] ?? 0} commentaires'),
+    TextButton.icon(onPressed: busy ? null : toggleLike,
+      icon: Icon(post['likedByMe'] == true ? Icons.favorite : Icons.favorite_border),
+      label: Text(post['likedByMe'] == true ? 'Je n’aime plus' : 'J’aime')),
+    const SizedBox(height: 8), Text('Commentaires', style: Theme.of(context).textTheme.titleMedium),
+    if (busy) const LinearProgressIndicator(),
+    if (error != null) ...[Text(error!, style: const TextStyle(color: Colors.red)),
+      TextButton(onPressed: busy ? null : () => load(reset: true), child: const Text('Actualiser les commentaires'))],
+    if (loaded && comments.isEmpty) const Text('Aucun commentaire pour le moment.'),
+    for (final entry in comments) Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('@${entry['author']} · ${dateLabel(entry['date'])}', style: const TextStyle(fontWeight: FontWeight.bold)),
+      Text('${entry['text']}'),
+      if (entry['authorId'] == widget.userId)
+        TextButton(onPressed: busy ? null : () => remove('${entry['id']}'), child: const Text('Supprimer')),
+    ])),
+    if (cursor != null) TextButton(onPressed: busy ? null : load, child: const Text('Voir plus de commentaires')),
+    TextField(key: const Key('comment-text'), controller: text, onChanged: (_) => pendingCommentId = null,
+      maxLength: 500, minLines: 1, maxLines: 3,
+      decoration: const InputDecoration(labelText: 'Votre commentaire')),
+    FilledButton(onPressed: busy ? null : submit, child: const Text('Publier le commentaire')),
+  ]);
 }
 
 class AthleteSearchScreen extends StatefulWidget {

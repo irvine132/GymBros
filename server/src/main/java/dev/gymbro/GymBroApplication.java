@@ -46,6 +46,7 @@ public class GymBroApplication {
                       Integer reps, BigDecimal weight, String unit) {}
   record Hyrox(UUID clientId, String title, List<HyroxSegment> segments, Integer totalSeconds, String notes) {}
   record Report(String reason) {}
+  record CommentInput(UUID clientId,String text) {}
   record ProfileUpdate(String displayName, @JsonProperty("private") Boolean privateAccount, String unit) {}
   record Publication(String audience) {}
   record TemplateDefinition(String title, List<Exercise> exercises) {}
@@ -387,6 +388,13 @@ public class GymBroApplication {
         out.put("result",projected);
       } catch(Exception ex) { throw new IllegalStateException("Invalid stored WOD",ex); }
     } else { out.put("exerciseCount",row.get("exercise_count")); out.put("exercises",publicExercises((String)row.get("payload"))); }
+    UUID id=(UUID)row.get("id");
+    Map<String,Object> engagement=db.queryForMap("SELECT (SELECT count(*) FROM post_like l WHERE l.post_id=? AND NOT EXISTS (SELECT 1 FROM user_block b WHERE (b.blocker_id=? AND b.blocked_id=l.actor_id) OR (b.blocked_id=? AND b.blocker_id=l.actor_id))) AS likes,"
+      +"(SELECT count(*) FROM post_comment c WHERE c.post_id=? AND c.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM user_block b WHERE (b.blocker_id=? AND b.blocked_id=c.author_id) OR (b.blocked_id=? AND b.blocker_id=c.author_id))) AS comments,"
+      +"EXISTS(SELECT 1 FROM post_like WHERE post_id=? AND actor_id=?) AS mine",id,viewer,viewer,id,viewer,viewer,id,viewer);
+    out.put("likeCount",((Number)engagement.get("likes")).intValue());
+    out.put("commentCount",((Number)engagement.get("comments")).intValue());
+    out.put("likedByMe",engagement.get("mine"));
     provenance(out,(UUID)row.get("source_post_id"),viewer);
     return out;
   }
@@ -397,6 +405,66 @@ public class GymBroApplication {
     return publicRow(found.getFirst(),actor);
   }
   @GetMapping("/posts/{id}") public Map<String,Object> detail(@PathVariable UUID id,HttpServletRequest request) { return post(id,actor(request)); }
+  @PostMapping("/posts/{id}/likes") @Transactional public ResponseEntity<?> like(@PathVariable UUID id,HttpServletRequest request) {
+    UUID viewer=actor(request); post(id,viewer);
+    int added=db.update("INSERT INTO post_like(post_id,actor_id) SELECT p.id,? FROM activity_post p JOIN app_user u ON u.id=p.author_id WHERE "+DETAIL+" AND p.id=? ON CONFLICT DO NOTHING",viewer,viewer,viewer,viewer,viewer,id);
+    if(added==0) post(id,viewer); // Distinguish an idempotent retry from revoked access.
+    return ResponseEntity.status(added==1?HttpStatus.CREATED:HttpStatus.OK).body(post(id,viewer));
+  }
+  @DeleteMapping("/posts/{id}/likes") @Transactional public Map<String,Object> unlike(@PathVariable UUID id,HttpServletRequest request) {
+    UUID viewer=actor(request); post(id,viewer);
+    db.update("DELETE FROM post_like l WHERE l.post_id=? AND l.actor_id=? AND EXISTS(SELECT 1 FROM activity_post p JOIN app_user u ON u.id=p.author_id WHERE "+DETAIL+" AND p.id=l.post_id)",id,viewer,viewer,viewer,viewer,viewer);
+    return post(id,viewer);
+  }
+  private Map<String,Object> commentRow(Map<String,Object> row) {
+    return Map.of("id",row.get("id"),"authorId",row.get("author_id"),"author",row.get("handle"),
+      "text",row.get("text"),"date",row.get("day").toString());
+  }
+  private static final String COMMENTS="SELECT c.id,c.author_id,u2.handle,c.text,c.created_at,(c.created_at AT TIME ZONE 'UTC')::date AS day FROM post_comment c JOIN app_user u2 ON u2.id=c.author_id JOIN activity_post p ON p.id=c.post_id JOIN app_user u ON u.id=p.author_id WHERE ";
+  private static final String COMMENT_FILTER=" AND c.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM user_block b WHERE (b.blocker_id=? AND b.blocked_id=c.author_id) OR (b.blocked_id=? AND b.blocker_id=c.author_id))";
+  @GetMapping("/posts/{id}/comments") public Map<String,Object> comments(@PathVariable UUID id,HttpServletRequest request,
+    @RequestParam(defaultValue="20") int limit,@RequestParam(required=false) String cursor) {
+    UUID viewer=actor(request); post(id,viewer);
+    if(limit<1 || limit>20) throw error(HttpStatus.BAD_REQUEST);
+    Object[] after=cursor(cursor);
+    List<Object> params=new ArrayList<>(List.of(viewer,viewer,viewer,viewer,viewer,viewer,id));
+    if(after!=null) { params.add(after[0]); params.add(after[1]); }
+    params.add(limit+1);
+    List<Map<String,Object>> rows=db.queryForList(COMMENTS+DETAIL+COMMENT_FILTER+" AND p.id=?"+
+      (after==null?"":" AND (c.created_at,c.id)<(?,?)")+" ORDER BY c.created_at DESC,c.id DESC LIMIT ?",params.toArray());
+    boolean more=rows.size()>limit;
+    List<Map<String,Object>> items=rows.subList(0,Math.min(limit,rows.size()));
+    Map<String,Object> out=new LinkedHashMap<>();
+    out.put("items",items.stream().map(this::commentRow).toList());
+    Map<String,Object> last=items.isEmpty()?null:items.getLast();
+    out.put("nextCursor",more && last!=null?Base64.getUrlEncoder().withoutPadding().encodeToString((((Timestamp)last.get("created_at")).toInstant()+"|"+last.get("id")).getBytes(StandardCharsets.UTF_8)):null);
+    return out;
+  }
+  @PostMapping("/posts/{id}/comments") @Transactional public ResponseEntity<?> comment(@PathVariable UUID id,@RequestBody(required=false) CommentInput in,HttpServletRequest request) {
+    UUID viewer=actor(request); post(id,viewer);
+    if(in==null || in.clientId()==null || in.text()==null || in.text().strip().isEmpty() || in.text().strip().length()>500) throw error(HttpStatus.BAD_REQUEST);
+    UUID commentId=UUID.randomUUID();
+    int inserted=db.update("INSERT INTO post_comment(id,post_id,author_id,client_id,text) SELECT ?,p.id,?,?,? FROM activity_post p JOIN app_user u ON u.id=p.author_id WHERE "+DETAIL+" AND p.id=? ON CONFLICT DO NOTHING",commentId,viewer,in.clientId(),in.text().strip(),viewer,viewer,viewer,viewer,id);
+    if(inserted==0) {
+      post(id,viewer);
+      List<Map<String,Object>> existing=db.queryForList("SELECT id,post_id,text,deleted_at FROM post_comment WHERE author_id=? AND client_id=?",viewer,in.clientId());
+      if(existing.isEmpty()) throw error(HttpStatus.NOT_FOUND);
+      Map<String,Object> found=existing.getFirst();
+      if(!id.equals(found.get("post_id")) || !in.text().strip().equals(found.get("text")) || found.get("deleted_at")!=null) throw error(HttpStatus.CONFLICT);
+      commentId=(UUID)found.get("id");
+    }
+    List<Map<String,Object>> rows=db.queryForList(COMMENTS+DETAIL+COMMENT_FILTER+" AND c.id=?",viewer,viewer,viewer,viewer,viewer,viewer,commentId);
+    if(rows.isEmpty()) throw error(HttpStatus.NOT_FOUND);
+    return ResponseEntity.status(inserted==1?HttpStatus.CREATED:HttpStatus.OK).body(commentRow(rows.getFirst()));
+  }
+  @DeleteMapping("/posts/{id}/comments/{commentId}") @Transactional public Map<String,Object> deleteComment(@PathVariable UUID id,@PathVariable UUID commentId,HttpServletRequest request) {
+    UUID viewer=actor(request); post(id,viewer);
+    int owns=db.queryForObject("SELECT count(*) FROM post_comment WHERE id=? AND post_id=? AND author_id=?",Integer.class,commentId,id,viewer);
+    if(owns==0) throw error(HttpStatus.NOT_FOUND);
+    db.update("UPDATE post_comment c SET deleted_at=now() WHERE c.id=? AND c.post_id=? AND c.author_id=? AND c.deleted_at IS NULL AND EXISTS(SELECT 1 FROM activity_post p JOIN app_user u ON u.id=p.author_id WHERE "+DETAIL+" AND p.id=c.post_id)",commentId,id,viewer,viewer,viewer,viewer,viewer);
+    post(id,viewer);
+    return Map.of("deleted",true);
+  }
   private static final String TEMPLATE_SELECT="SELECT id,title,definition::text AS definition,version,source_post_id FROM workout_template WHERE owner_id=?";
   private Map<String,Object> templateRow(Map<String,Object> row,UUID owner) {
     try {

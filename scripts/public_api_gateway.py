@@ -16,14 +16,14 @@ UUID = r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
 ROUTES = {
     'GET': (r'/me', r'/me/summary', r'/me/follow-requests', r'/exercises', r'/feed', r'/feed/following',
             r'/templates', rf'/templates/{UUID}',
-            r'/users', rf'/users/{UUID}', rf'/users/{UUID}/posts', r'/sessions', rf'/sessions/{UUID}', rf'/posts/{UUID}'),
+            r'/users', rf'/users/{UUID}', rf'/users/{UUID}/posts', r'/sessions', rf'/sessions/{UUID}', rf'/posts/{UUID}', rf'/posts/{UUID}/comments'),
     'POST': (r'/auth/register', r'/auth/login', r'/auth/logout', r'/sessions', r'/wods', r'/hyrox',
              rf'/sessions/{UUID}/complete', rf'/sessions/{UUID}/complete-expected', rf'/sessions/{UUID}/posts',
-             rf'/posts/{UUID}/reports', rf'/posts/{UUID}/copy', rf'/templates/{UUID}/sessions',
+             rf'/posts/{UUID}/reports', rf'/posts/{UUID}/copy', rf'/posts/{UUID}/likes', rf'/posts/{UUID}/comments', rf'/templates/{UUID}/sessions',
              rf'/users/{UUID}/block', rf'/users/{UUID}/follow',
              rf'/follow-requests/{UUID}/accept', rf'/follow-requests/{UUID}/reject'),
     'PUT': (r'/me/profile', rf'/sessions/{UUID}', rf'/wods/{UUID}', rf'/hyrox/{UUID}', rf'/templates/{UUID}'),
-    'DELETE': (rf'/users/{UUID}/follow',),
+    'DELETE': (rf'/users/{UUID}/follow', rf'/posts/{UUID}/likes', rf'/posts/{UUID}/comments/{UUID}'),
 }
 _lock = threading.Lock()
 _windows = {'auth': [], 'write': []}
@@ -41,7 +41,7 @@ def route(method, target):
         return None
     if not any(re.fullmatch(pattern, suffix) for pattern in ROUTES.get(method, ())):
         return None
-    paged = suffix == '/feed/following' or re.fullmatch(rf'/users/{UUID}/posts', suffix)
+    paged = suffix == '/feed/following' or re.fullmatch(rf'/(?:users/{UUID}/posts|posts/{UUID}/comments)', suffix)
     if parsed.query and not (method == 'GET' and (
         (suffix == '/feed' and re.fullmatch(r'offset=(0|[1-9][0-9]{0,3})', parsed.query)) or
         (suffix == '/users' and re.fullmatch(r'query=[A-Za-z0-9_%+-]{2,180}', parsed.query) and

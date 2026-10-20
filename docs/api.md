@@ -69,3 +69,16 @@ Projection publique WOD uniquement `{id,authorId,author,title,date,sport:"CROSSF
 ## Tranche D3 — fin locale privée conditionnelle
 
 `POST /sessions/{id}/complete-expected` accepte le payload sportif privé exact soumis à la création (`Workout`, `Wod` ou `Hyrox` comme JSON). Bearer requis, propriétaire seul : 404 si absent ou tiers, 409 si payload différent du brouillon distant ou d'une séance déjà terminée, 200 si brouillon identique terminé ou si même fin rejouée. Comparaison JSONB sans champs null ; `clientId` reste stable. Ce chemin ne crée jamais de publication. Il ne remplace pas les anciens clients utilisant `/complete` sans garde ; voir `docs/decisions/ADR-007-offline-completion-outbox.md`. La passerelle n'autorise que POST avec UUID au bon chemin et corps ≤64 Kio, pas de route administrative.
+
+## SOC-05 — likes et commentaires (V6/V7 additives, candidat local)
+
+Tous les chemins exigent Bearer et la visibilité actuelle du post (`DETAIL`), y compris après changement de compte privé, désabonnement ou blocage bidirectionnel ; 404 sinon. Voir `docs/decisions/ADR-008-post-interactions.md`. `/posts/{id}` et les projections du fil ajoutent `likeCount`, `commentCount` et `likedByMe`, calculés sur les acteurs non bloqués du lecteur. Aucun faux compteur côté client.
+
+| Méthode | Chemin | Contrat |
+|---|---|---|
+| POST / DELETE | `/posts/{id}/likes` | POST 201 ou 200 si déjà aimé, DELETE 200 même au retry ; réponse projection du post autorisé |
+| GET | `/posts/{id}/comments?limit=20&cursor=...` | `{items,nextCursor}` ; limite 1–20, curseur base64url `(instant UTC|UUID)` ; liste après filtrage des blocages |
+| POST | `/posts/{id}/comments` | `{clientId:UUID,text:string}` ; texte non vide après trim, ≤500 caractères ; 201 ou 200 pour même UUID auteur/post/texte, 409 pour UUID réutilisé différemment |
+| DELETE | `/posts/{id}/comments/{commentId}` | 200 `{deleted:true}` seulement par l'auteur du commentaire ; retry 200, tiers 404 |
+
+Chaque commentaire renvoie `{id,authorId,author,text,date}` où `date` est le jour UTC. Pas de timestamp précis ou d'identité privée dans les réponses. La limite globale gateway existante porte sur les écritures ; pas de modération complète dans ce lot. Ces routes sont **candidates locales** jusqu'à revue indépendante, serveur TEST compatible et livraison de l'APK.

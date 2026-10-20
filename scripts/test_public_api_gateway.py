@@ -21,6 +21,15 @@ class GatewayTest(unittest.TestCase):
                              ('PUT', f'/wods/{identifier}'), ('POST', '/hyrox'),
                              ('PUT', f'/hyrox/{identifier}')]:
             self.assertEqual(route(method, '/gym-bro/api/v1' + path), '/api/v1' + path)
+        for method, path in [('GET', f'/posts/{identifier}/comments?limit=1'),
+                             ('POST', f'/posts/{identifier}/comments'),
+                             ('POST', f'/posts/{identifier}/likes'),
+                             ('DELETE', f'/posts/{identifier}/likes'),
+                             ('DELETE', f'/posts/{identifier}/comments/{identifier}')]:
+            self.assertEqual(route(method, '/gym-bro/api/v1' + path), '/api/v1' + path)
+        self.assertIsNone(route('GET', f'/posts/{identifier}/comments?cursor=%0a'))
+        self.assertIsNone(route('POST', f'/posts/{identifier}/comments?owner=other'))
+        self.assertIsNone(route('DELETE', f'/posts/{identifier}/comments/not-a-uuid'))
         self.assertIsNone(route('GET', '/api/v1/wods'))
         self.assertIsNone(route('PUT', '/api/v1/wods/not-a-uuid'))
         self.assertIsNone(route('GET', '/api/v1/hyrox'))

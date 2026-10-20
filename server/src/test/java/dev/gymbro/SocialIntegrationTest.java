@@ -242,4 +242,48 @@ class SocialIntegrationTest {
     assertThat(following(viewer)).doesNotContain("Mon Hyrox");
     assertThat(call(HttpMethod.GET,"/posts/"+post,null,viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
   }
+  @Test void reactionsAndCommentsRecheckVisibilityOnEveryRoute() {
+    User author=user("reactionowner"), viewer=user("reactionviewer"), third=user("reactionthird");
+    String post=publish(author,"Reaction workout", "PUBLIC");
+    String base="/posts/"+post;
+    assertThat(call(HttpMethod.GET,base,null,viewer.token()).getBody()).containsEntry("likeCount",0).containsEntry("likedByMe",false);
+    assertThat(call(HttpMethod.POST,base+"/likes",Map.of(),viewer.token()).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    assertThat(call(HttpMethod.POST,base+"/likes",Map.of(),viewer.token()).getStatusCode()).isEqualTo(HttpStatus.OK);
+    assertThat(call(HttpMethod.GET,base,null,viewer.token()).getBody()).containsEntry("likeCount",1).containsEntry("likedByMe",true);
+    assertThat(call(HttpMethod.POST,base+"/comments",Map.of("clientId",UUID.randomUUID().toString(),"text","   "),viewer.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    assertThat(call(HttpMethod.POST,base+"/comments",Map.of("clientId",UUID.randomUUID().toString(),"text","x".repeat(501)),viewer.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    String client=UUID.randomUUID().toString();
+    var comment=ok(HttpMethod.POST,base+"/comments",Map.of("clientId",client,"text","  Bien joué !  "),viewer.token(),HttpStatus.CREATED);
+    String cid=comment.get("id").toString();
+    assertThat(ok(HttpMethod.POST,base+"/comments",Map.of("clientId",client,"text","  Bien joué !  "),viewer.token(),HttpStatus.OK).get("id")).isEqualTo(cid);
+    assertThat(call(HttpMethod.POST,base+"/comments",Map.of("clientId",client,"text","changed"),viewer.token()).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+    assertThat(comment.get("text")).isEqualTo("Bien joué !");
+    assertThat(comment.get("author")).isEqualTo(viewer.handle());
+    assertThat(call(HttpMethod.DELETE,base+"/comments/"+cid,null,third.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    ok(HttpMethod.POST,base+"/comments",Map.of("clientId",UUID.randomUUID().toString(),"text","Deuxième"),author.token(),HttpStatus.CREATED);
+    var page=ok(HttpMethod.GET,base+"/comments?limit=1",null,third.token(),HttpStatus.OK);
+    assertThat(page.get("items").toString()).contains("Deuxième").doesNotContain("email","password");
+    String cursor=page.get("nextCursor").toString();
+    assertThat(cursor).isNotBlank();
+    assertThat(ok(HttpMethod.GET,base+"/comments?limit=1&cursor="+cursor,null,third.token(),HttpStatus.OK).get("items").toString()).contains("Bien joué !");
+    assertThat(call(HttpMethod.GET,base+"/comments?cursor=bad",null,third.token()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    ok(HttpMethod.DELETE,base+"/comments/"+cid,null,viewer.token(),HttpStatus.OK);
+    ok(HttpMethod.DELETE,base+"/comments/"+cid,null,viewer.token(),HttpStatus.OK);
+    ok(HttpMethod.DELETE,base+"/likes",null,viewer.token(),HttpStatus.OK);
+    ok(HttpMethod.DELETE,base+"/likes",null,viewer.token(),HttpStatus.OK);
+    assertThat(call(HttpMethod.GET,base,null,viewer.token()).getBody()).containsEntry("likeCount",0).containsEntry("likedByMe",false);
+    ok(HttpMethod.PUT,"/me/profile",Map.of("private",true,"unit","kg"),author.token(),HttpStatus.OK);
+    for (String route:List.of(base,base+"/comments"))
+      assertThat(call(HttpMethod.GET,route,null,viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    for (String route:List.of(base+"/likes",base+"/comments"))
+      assertThat(call(HttpMethod.POST,route,Map.of("text","private"),viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.DELETE,base+"/likes",null,viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.DELETE,base+"/comments/"+cid,null,viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    ok(HttpMethod.POST,"/users/"+author.id()+"/follow",Map.of(),viewer.token(),HttpStatus.ACCEPTED);
+    ok(HttpMethod.POST,"/follow-requests/"+viewer.id()+"/accept",Map.of(),author.token(),HttpStatus.OK);
+    assertThat(call(HttpMethod.GET,base+"/comments",null,viewer.token()).getStatusCode()).isEqualTo(HttpStatus.OK);
+    ok(HttpMethod.POST,"/users/"+viewer.id()+"/block",Map.of(),author.token(),HttpStatus.CREATED);
+    assertThat(call(HttpMethod.GET,base+"/comments",null,viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.POST,base+"/likes",Map.of(),viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+  }
 }
