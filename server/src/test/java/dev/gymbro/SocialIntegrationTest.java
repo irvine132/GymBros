@@ -286,4 +286,43 @@ class SocialIntegrationTest {
     assertThat(call(HttpMethod.GET,base+"/comments",null,viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     assertThat(call(HttpMethod.POST,base+"/likes",Map.of(),viewer.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
   }
+  @Test void blockedInteractionActorsDisappearFromCountersAndEveryPostRouteDeniesRevokedViewer() {
+    User author=user("blockowner"), actor=user("blockactor"), observer=user("blockobserver");
+    String base="/posts/"+publish(author,"Blocked reactions", "PUBLIC");
+    ok(HttpMethod.POST,base+"/likes",Map.of(),actor.token(),HttpStatus.CREATED);
+    String client=UUID.randomUUID().toString();
+    String comment=ok(HttpMethod.POST,base+"/comments",Map.of("clientId",client,"text","Bravo"),actor.token(),HttpStatus.CREATED).get("id").toString();
+    assertThat(call(HttpMethod.GET,base,null,observer.token()).getBody())
+      .containsEntry("likeCount",1).containsEntry("commentCount",1);
+    ok(HttpMethod.POST,"/users/"+actor.id()+"/block",Map.of(),observer.token(),HttpStatus.CREATED);
+    assertThat(call(HttpMethod.GET,base,null,observer.token()).getBody())
+      .containsEntry("likeCount",0).containsEntry("commentCount",0);
+    assertThat(ok(HttpMethod.GET,base+"/comments",null,observer.token(),HttpStatus.OK).get("items").toString()).doesNotContain("Bravo",actor.handle());
+    // An actor blocking the owner loses all post routes, including retries and
+    // deletion of a comment they created before the block.
+    ok(HttpMethod.POST,"/users/"+actor.id()+"/block",Map.of(),author.token(),HttpStatus.CREATED);
+    String token=actor.token();
+    assertThat(call(HttpMethod.GET,base,null,token).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.GET,base+"/comments",null,token).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.POST,base+"/likes",Map.of(),token).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.DELETE,base+"/likes",null,token).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.POST,base+"/comments",Map.of("clientId",client,"text","Bravo"),token).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.DELETE,base+"/comments/"+comment,null,token).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.GET,base,null,author.token()).getBody())
+      .containsEntry("likeCount",0).containsEntry("commentCount",0);
+    User second=user("blockedbyowner");
+    String secondClient=UUID.randomUUID().toString();
+    ok(HttpMethod.POST,base+"/likes",Map.of(),second.token(),HttpStatus.CREATED);
+    String secondComment=ok(HttpMethod.POST,base+"/comments",Map.of("clientId",secondClient,"text","Salut"),second.token(),HttpStatus.CREATED).get("id").toString();
+    ok(HttpMethod.POST,"/users/"+second.id()+"/block",Map.of(),author.token(),HttpStatus.CREATED);
+    assertThat(call(HttpMethod.GET,base,null,author.token()).getBody())
+      .containsEntry("likeCount",0).containsEntry("commentCount",0);
+    assertThat(call(HttpMethod.GET,base,null,second.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.GET,base+"/comments",null,second.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.POST,base+"/likes",Map.of(),second.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.DELETE,base+"/likes",null,second.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.POST,base+"/comments",Map.of("clientId",secondClient,"text","Salut"),second.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.DELETE,base+"/comments/"+secondComment,null,second.token()).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(call(HttpMethod.GET,base,null,observer.token()).getStatusCode()).isEqualTo(HttpStatus.OK);
+  }
 }
